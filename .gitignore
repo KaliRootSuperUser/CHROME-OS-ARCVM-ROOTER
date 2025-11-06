@@ -25,3 +25,4 @@ virtualenv/
 
 # Logs
 *.log
+git-push-commit-orchestrator.sh
