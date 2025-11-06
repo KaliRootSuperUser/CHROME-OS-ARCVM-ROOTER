@@ -119,7 +119,7 @@ diff --git a/drivers/kernelsu/kpm/kpm.c b/drivers/kernelsu/kpm/kpm.c
 -    strncpy_from_user((char *)&kernel_name_buffer, (const char __user *)arg3, 255);
 +    if (strncpy_from_user((char *)&kernel_name_buffer, (const char __user *)arg3, 255) < 0) return -EFAULT;
      kernel_name_buffer[255] = '\0';
-          EOF
+EOF
           git apply kpm-fix.patch && echo "KPM copy-size bug SMASHED"
 
       - name: 6. Apply All Patches
