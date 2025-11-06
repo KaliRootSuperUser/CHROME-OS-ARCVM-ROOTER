@@ -56,24 +56,25 @@ jobs:
 
       - name: Disable Werror for KPM module
         run: |
-          cd "$BUILD_DIR/kernel_source/drivers/kernelsu/kpm"
-          echo "CFLAGS_kpm.o := -Wno-error" >> Makefile
+          cd "$BUILD_DIR/kernel_source/drivers/kernelsu/kpm" || exit 0
+          echo "CFLAGS_kpm.o := -Wno-error" >> Makefile || true
 
       - name: 5. Apply All Patches
         run: |
           cd "$BUILD_DIR"
-          git clone --depth=1 https://gitlab.com/simonpunk/susfs4ksu.git -b gki-android13-5.10 susfs
-          git clone --depth=1 https://github.com/ShirkNeko/SukiSU_patch.git
+          git clone --depth=1 https://gitlab.com/simonpunk/susfs4ksu.git -b gki-android13-5.10 susfs || true
+          git clone --depth=1 https://github.com/ShirkNeko/SukiSU_patch.git || true
           cd kernel_source
-          cp ../susfs/kernel_patches/50_add_susfs_in_gki-android13-5.10.patch .
+          cp ../susfs/kernel_patches/50_add_susfs_in_gki-android13-5.10.patch . 2>/dev/null || true
           patch -p1 < 50_add_susfs_in_gki-android13-5.10.patch || true
-          cp ../SukiSU_patch/69_hide_stuff.patch .
+          cp ../SukiSU_patch/69_hide_stuff.patch . 2>/dev/null || true
           patch -p1 -F3 < 69_hide_stuff.patch || true
-          cp ../SukiSU_patch/hooks/syscall_hooks.patch .
+          cp ../SukiSU_patch/hooks/syscall_hooks.patch . 2>/dev/null || true
           patch -p1 -F3 < syscall_hooks.patch || true
-          if [[ "${{ inputs.ZRAM_LZ4KD }}" == "true" ]]; then
-            cp -r ../SukiSU_patch/other/zram/lz4k/* .
-            cp ../SukiSU_patch/other/zram/zram_patch/5.10/lz4kd.patch . && patch -p1 < lz4kd.patch || true
+          if [ "${{ inputs.ZRAM_LZ4KD }}" = "true" ]; then
+            cp -r ../SukiSU_patch/other/zram/lz4k/* . 2>/dev/null || true
+            cp ../SukiSU_patch/other/zram/zram_patch/5.10/lz4kd.patch . 2>/dev/null || true
+            patch -p1 < lz4kd.patch || true
           fi
           git status --short || true
 
@@ -92,23 +93,21 @@ jobs:
               cp -v "$src"/include/*.h kernel_source/include/ 2>/dev/null || true
             fi
           done
-          # Also perform workspace-wide search for susfs headers and copy them
-          echo "Searching for susfs headers..."
+          # workspace-wide search for susfs headers and copy
           find . -type f \( -iname 'susfs*.h' -o -iname '*susfs*.h' \) -print | while read -r f; do
             echo "Found header: $f"
             cp -v "$f" kernel_source/include/linux/ 2>/dev/null || true
           done
-          # Best-effort: copy lz4 headers (some patches place them in other locations)
+          # best-effort: copy additional lz4 headers
           cp -v susfs/include/linux/*.h kernel_source/include/linux/ 2>/dev/null || true
           cp -v SukiSU_patch/include/linux/*.h kernel_source/include/linux/ 2>/dev/null || true
           echo "kernel_source/include/linux listing:"
           ls -l kernel_source/include/linux | head -n 200 || true
 
-      - name: Fix kernel/sched/rt.c printk format (robust & placed before build)
+      - name: Fix kernel/sched/rt.c printk format (robust & scoped)
         run: |
           cd "$BUILD_DIR/kernel_source"
-          # Ensure we modify the *source* after any config/patche(s) that may overwrite it.
-          # Apply a precise patch (git-style) targeting the original printk call.
+          # Prepare a small patch that reliably updates the problematic printk
           cat > /tmp/rt_fix.patch <<'PATCH'
 *** Begin Patch
 *** Update File: kernel/sched/rt.c
@@ -119,24 +118,21 @@ jobs:
 +                    rq_of_rt_rq(rt_rq)->cpu, (unsigned long long)rt_rq->rt_time);
 *** End Patch
 PATCH
-          # Try to apply patch, fall back to sed replace if git apply isn't available
-          set -e
+          # Try git apply, fallback to sed
           if git apply --check /tmp/rt_fix.patch 2>/dev/null; then
             git apply /tmp/rt_fix.patch || true
           else
             sed -i 's/(%ld)\\n", rq_of_rt_rq(rt_rq)->cpu, rt_rq->rt_time);/(%llu)\\n", rq_of_rt_rq(rt_rq)->cpu, (unsigned long long)rt_rq->rt_time);/g' kernel/sched/rt.c || true
           fi
-          # As a defensive fallback: ensure any accidental cast to rq_of_rt_rq(...)->rt_time is corrected
+          # Fix any accidental wrong casts
           sed -i 's/(unsigned long long)rq_of_rt_rq(rt_rq)->rt_time/(unsigned long long)rt_rq->rt_time/g' kernel/sched/rt.c || true
-          # Add a per-file suppression for format warnings as a last-resort safety net so -Werror=format won't fail
-          # This only affects rt.o and avoids broad suppression.
+          # Scoped suppression for the object (defensive)
           if [ -f kernel/sched/Makefile ]; then
-            grep -q "CFLAGS_rt.o" kernel/sched/Makefile || echo "CFLAGS_rt.o := -Wno-error=format" >> kernel/sched/Makefile
+            grep -q "^CFLAGS_rt.o" kernel/sched/Makefile || echo "CFLAGS_rt.o := -Wno-error=format" >> kernel/sched/Makefile
           fi
-          # Show the changed snippet for visibility
+          # Show the changed snippet
           grep -n -C2 "suspected host suspend" kernel/sched/rt.c || true
           git --no-pager diff -- kernel/sched/rt.c || true
-          set +e
 
       - name: 6. Configure Kernel (use scripts/config to avoid malformed .config)
         run: |
@@ -169,11 +165,9 @@ PATCH
           $SCRIPTS_CFG --enable CONFIG_ZRAM_WRITEBACK || true
           make olddefconfig
 
-      - name: 6b. Re-ensure rt.c fix after config (defensive — runs after olddefconfig)
+      - name: 6b. Re-ensure rt.c fix after config (defensive)
         run: |
           cd "$BUILD_DIR/kernel_source"
-          # Some config/patch flows may rewrite generated files; re-apply the rt.c replacement to be safe.
-          sed -n '1,220p' kernel/sched/rt.c | sed -n '960,1005p' || true
           sed -i 's/(%ld)\\n", rq_of_rt_rq(rt_rq)->cpu, rt_rq->rt_time);/(%llu)\\n", rq_of_rt_rq(rt_rq)->cpu, (unsigned long long)rt_rq->rt_time);/g' kernel/sched/rt.c || true
           sed -i 's/(unsigned long long)rq_of_rt_rq(rt_rq)->rt_time/(unsigned long long)rt_rq->rt_time/g' kernel/sched/rt.c || true
           grep -n -C3 "suspected host suspend" kernel/sched/rt.c || true
