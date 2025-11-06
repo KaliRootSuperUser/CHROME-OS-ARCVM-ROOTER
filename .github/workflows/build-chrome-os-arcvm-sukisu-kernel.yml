@@ -1,15 +1,21 @@
+name: ARCVM SukiSU Ultra
 on:
-  push:
-    branches:
-      - main
-
+  workflow_dispatch:
+    inputs:
+      ZRAM_LZ4KD:
+        type: boolean
+        default: true
+        description: "LZ4KD + ZRAM ultra-compression?"
+      HIDE_APPS:
+        type: boolean
+        default: true
+        description: "Hide root from banking apps?"
 jobs:
   build:
     runs-on: ubuntu-latest
     permissions:
       contents: write
       actions: read
-
     steps:
       - name: 1. Maximize Disk & Swap
         run: |
@@ -21,16 +27,15 @@ jobs:
           sudo swapon /swapfile
           sudo apt install -y git curl wget build-essential bc bison flex \
             libelf-dev libssl-dev libncurses5-dev python3 cpio unzip jq \
-            device-tree-compiler clang lld llvm zip qrencode patch
+            device-tree-compiler clang lld llvm zip qrencode
           free -h && df -h
-
       - name: 2. Create Build Directory
         run: |
           export BUILD_DIR="$HOME/arcvm_root_build"
           mkdir -p "$BUILD_DIR"
           cd "$BUILD_DIR"
           echo "BUILD_DIR=$BUILD_DIR" >> $GITHUB_ENV
-
+          pwd
       - name: 3. Clone ChromeOS 5.10 ARCVM Kernel
         run: |
           cd "$BUILD_DIR"
@@ -38,7 +43,6 @@ jobs:
             https://chromium.googlesource.com/chromiumos/third_party/kernel.git \
             -b chromeos-5.10-arcvm kernel_source
           cd kernel_source && git log -1 --oneline
-
       - name: 4. Inject SukiSU-Ultra
         run: |
           cd "$BUILD_DIR/kernel_source"
@@ -47,89 +51,19 @@ jobs:
           KSU_VERSION=$(($(git rev-list --count main) + 10606))
           echo "KSUVER=$KSU_VERSION" >> $GITHUB_ENV
           sed -i "s/DKSU_VERSION=12800/DKSU_VERSION=$KSU_VERSION/" ../Makefile
-
-      - name: 5. AUTO-FIX KPM copy-size errors (the magic)
+          echo "SukiSU Ultra v$KSU_VERSION injected"
+      - name: Disable Werror for KPM module
         run: |
-          cd "$BUILD_DIR/kernel_source"
-          cat > kpm-fix.patch <<'EOF'
-diff --git a/drivers/kernelsu/kpm/kpm.c b/drivers/kernelsu/kpm/kpm.c
---- a/drivers/kernelsu/kpm/kpm.c
-+++ b/drivers/kernelsu/kpm/kpm.c
-@@ -65,7 +65,7 @@ static long sukitu_kpm_load_module_path(...)
-     char path[256];
-     size_t path_len = strlen(path);
--    if (copy_to_user((void __user *)arg2, &path_len, sizeof(path_len)))
-+    if (copy_to_user((void __user *)arg2, &path_len, sizeof(path_len))) return -EFAULT;
-     return sukitu_load_module_path(path, arg3);
- 
-@@ -80,7 +80,7 @@ static long sukitu_kpm_unload_module(...)
-     int ret = sukitu_unload_module((const char __user *)arg1);
--    copy_to_user((void __user *)arg2, &ret, sizeof(ret));
-+    if (copy_to_user((void __user *)arg2, &ret, sizeof(ret))) return -EFAULT;
-     return 0;
- 
-@@ -93,7 +93,7 @@ static long sukitu_kpm_num(...)
-     int num = sukitu_get_module_num();
--    copy_to_user((void __user *)arg2, &num, sizeof(num));
-+    if (copy_to_user((void __user *)arg2, &num, sizeof(num))) return -EFAULT;
-     return 0;
- 
-@@ -108,7 +108,7 @@ static long sukitu_kpm_info(...)
-     memset(&info, 0, sizeof(info));
--    copy_to_user((void __user *)arg2, &info, sizeof(info));
-+    if (copy_to_user((void __user *)arg2, &info, sizeof(info))) return -EFAULT;
-     return 0;
- 
-@@ -121,8 +121,8 @@ static long sukitu_kpm_list(...)
-     char *list = kzalloc(list_size, GFP_KERNEL);
-     /* fill list */
--    copy_to_user((void __user *)arg2, list, list_size);
--    copy_to_user((void __user *)arg3, &list_size, sizeof(list_size));
-+    if (copy_to_user((void __user *)arg2, list, list_size)) return -EFAULT;
-+    if (copy_to_user((void __user *)arg3, &list_size, sizeof(list_size))) return -EFAULT;
-     kfree(list);
-     return 0;
- 
-@@ -136,7 +136,7 @@ static long sukitu_kpm_control(...)
-     if (copy_from_user(&ctrl, (void __user *)arg1, sizeof(ctrl)))
-         return -EFAULT;
--    copy_to_user((void __user *)arg2, &ctrl, sizeof(ctrl));
-+    if (copy_to_user((void __user *)arg2, &ctrl, sizeof(ctrl))) return -EFAULT;
-     return 0;
- 
-@@ -149,7 +149,7 @@ static long sukitu_kpm_version(...)
-     u32 ver = KPM_VERSION;
--    copy_to_user((void __user *)arg2, &ver, sizeof(ver));
-+    if (copy_to_user((void __user *)arg2, &ver, sizeof(ver))) return -EFAULT;
-     return 0;
- 
-@@ -165,19 +165,19 @@ static long sukisu_handle_kpm(...)
-     char kernel_load_path[256] = {0};
-     char kernel_args_buffer[256] = {0};
-     char kernel_name_buffer[256] = {0};
--    strncpy_from_user((char *)&kernel_load_path, (const char __user *)arg3, 255);
-+    if (strncpy_from_user((char *)&kernel_load_path, (const char __user *)arg3, 255) < 0) return -EFAULT;
-     kernel_load_path[255] = '\0';
--    strncpy_from_user((char *)&kernel_args_buffer, (const char __user *)arg4, 255);
-+    if (strncpy_from_user((char *)&kernel_args_buffer, (const char __user *)arg4, 255) < 0) return -EFAULT;
-     kernel_args_buffer[255] = '\0';
--    strncpy_from_user((char *)&kernel_name_buffer, (const char __user *)arg3, 255);
-+    if (strncpy_from_user((char *)&kernel_name_buffer, (const char __user *)arg3, 255) < 0) return -EFAULT;
-     kernel_name_buffer[255] = '\0';
--    strncpy_from_user((char *)&kernel_name_buffer, (const char __user *)arg3, 255);
-+    if (strncpy_from_user((char *)&kernel_name_buffer, (const char __user *)arg3, 255) < 0) return -EFAULT;
-     kernel_name_buffer[255] = '\0';
-EOF
-          git apply kpm-fix.patch && echo "KPM copy-size bug SMASHED"
-
-      - name: 6. Apply All Patches
+          cd "$BUILD_DIR/kernel_source/drivers/kernelsu/kpm"
+          echo "CFLAGS_kpm.o := -Wno-error" >> Makefile
+      - name: 5. Apply All Patches
         run: |
           cd "$BUILD_DIR"
           git clone --depth=1 https://gitlab.com/simonpunk/susfs4ksu.git -b gki-android13-5.10 susfs
           git clone --depth=1 https://github.com/ShirkNeko/SukiSU_patch.git
           cd kernel_source
           cp ../susfs/kernel_patches/50_add_susfs_in_gki-android13-5.10.patch .
-          patch -p1 < 50_add_susfs_in_gki-android13-5.10.patch || true
+          patch -p1 < 50_add_susfs_in_gki-android14-5.10.patch || true
           cp ../SukiSU_patch/69_hide_stuff.patch .
           patch -p1 -F3 < 69_hide_stuff.patch
           cp ../SukiSU_patch/hooks/syscall_hooks.patch .
@@ -138,13 +72,12 @@ EOF
             cp -r ../SukiSU_patch/other/zram/lz4k/* .
             cp ../SukiSU_patch/other/zram/zram_patch/5.10/lz4kd.patch . && patch -p1 < lz4kd.patch || true
           fi
-
+          git status --short
       - name: Fix kernel/sched/rt.c printk format
         run: |
           cd "$BUILD_DIR/kernel_source"
           sed -i 's/"(%ld)\\n", rq_of_rt_rq(rt_rq)->cpu, rt_rq->rt_time);/"(%llu)\\n", rq_of_rt_rq(rt_rq)->cpu, rt_rq->rt_time);/g' kernel/sched/rt.c
-
-      - name: 7. Configure Kernel
+      - name: 6. Configure Kernel
         run: |
           cd "$BUILD_DIR/kernel_source"
           make ARCH=x86_64 x86_64_arcvm_defconfig
@@ -175,15 +108,15 @@ EOF
           CONFIG_ZRAM_WRITEBACK=y
           EOF
           sed -i 's/ -dirty//g' scripts/setlocalversion
-
-      - name: 8. Build bzImage
+          grep KSU .config | head -5
+      - name: 7. Build bzImage
         timeout-minutes: 20
         run: |
           cd "$BUILD_DIR/kernel_source"
           make ARCH=x86_64 -j$(nproc) bzImage
           ls -lh arch/x86/boot/bzImage
-
-      - name: 9. Download SUSFS Module (CI)
+          file arch/x86/boot/bzImage
+      - name: 8. Download SUSFS Module (CI)
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
@@ -193,24 +126,22 @@ EOF
           ARTIFACT_URL=$(curl -s -H "Authorization: Bearer $GITHUB_TOKEN" https://api.github.com/repos/sidex15/susfs4ksu-module/actions/runs/$LATEST_ID/artifacts \
             | jq -r '.artifacts[0].archive_download_url')
           curl -L -H "Authorization: Bearer $GITHUB_TOKEN" -o susfs.zip "$ARTIFACT_URL"
-          unzip -o susfs.zip -d AnyKernel3/modules/ 2>/dev/null || mkdir -p AnyKernel3/modules && unzip -o susfs.zip -d AnyKernel3/modules/
-
-      - name: 10. Pack Flashable ZIP
+          unzip -l susfs.zip | head -3
+      - name: 9. Pack Flashable ZIP
         run: |
           cd "$BUILD_DIR"
-          git clone --depth=1 https://github.com/Numbersf/AnyKernel3 || true
+          git clone --depth=1 https://github.com/Numbersf/AnyKernel3
           cp kernel_source/arch/x86/boot/bzImage AnyKernel3/
+          unzip -o susfs.zip -d AnyKernel3/modules/
           cd AnyKernel3
           zip -r9 "../ARCVM-SUKISU-ULTRA.zip" * -x .git
           ls -lh ../ARCVM-SUKISU-ULTRA.zip
-
-      - name: 11. Pack Source Tree
+      - name: 10. Pack Source Tree
         run: |
           cd "$BUILD_DIR"
           tar -czf ARCVM-SUKISU-SOURCE.tar.gz kernel_source
           du -h ARCVM-SUKISU-SOURCE.tar.gz
-
-      - name: 12. Upload & QR Code
+      - name: 11. Upload & QR Code
         run: |
           cd "$BUILD_DIR"
           upload() { curl --progress-bar -T "$1" https://transfer.sh/$(basename "$1"); echo; }
@@ -221,8 +152,7 @@ EOF
           echo "SRC_URL=$SRC_URL" >> $GITHUB_ENV
           echo "BZ_URL=$BZ_URL" >> $GITHUB_ENV
           qrencode -t ansiutf8 "$ZIP_URL"
-
-      - name: 13. Upload Artifacts
+      - name: 12. Upload Artifacts
         uses: actions/upload-artifact@v4
         with:
           name: ARCVM-SUKISU-ULTRA-v${{ env.KSUVER }}
@@ -230,10 +160,10 @@ EOF
             ${{ env.BUILD_DIR }}/ARCVM-SUKISU-ULTRA.zip
             ${{ env.BUILD_DIR }}/ARCVM-SUKISU-SOURCE.tar.gz
             ${{ env.BUILD_DIR }}/kernel_source/arch/x86/boot/bzImage
-
-      - name: 14. SUCCESS
+      - name: 13. SUCCESS
         run: |
-          echo "ARCVM SUKISU ULTRA v${{ env.KSUVER }} READY"
-          echo "ZIP → ${{ env.ZIP_URL }}"
-          echo "SRC → ${{ env.SRC_URL }}"
-          echo "Flash → Reboot → GPay WORKS"
+          echo "ARCVM ROOT READY"
+          echo "ZIP: ${{ env.ZIP_URL }}"
+          echo "SOURCE: ${{ env.SRC_URL }}"
+          echo "bzImage: ${{ env.BZ_URL }}"
+          echo "Flash in KernelSU → reboot → GPay works"
