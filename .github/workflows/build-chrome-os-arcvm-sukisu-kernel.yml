@@ -79,33 +79,24 @@ jobs:
 
       - name: 5b. Install SUSFS/KernelSU headers into kernel include
         run: |
-          # Ensure any headers added by patches or KernelSU are available
           cd "$BUILD_DIR"
-          # Copy headers from KernelSU and patches (if present) into kernel include path
           for src in kernel_source/KernelSU include KernelSU susfs SukiSU_patch; do
             if [ -d "$src/include/linux" ]; then
-              echo "copying headers from $src/include/linux -> kernel_source/include/linux"
               mkdir -p kernel_source/include/linux
               cp -v "$src"/include/linux/*.h kernel_source/include/linux/ 2>/dev/null || true
             fi
             if [ -d "$src/include" ]; then
-              echo "copying headers from $src/include -> kernel_source/include"
               mkdir -p kernel_source/include
               cp -v "$src"/include/*.h kernel_source/include/ 2>/dev/null || true
             fi
           done
-          # Also copy any stray headers that may live at top-level directories of patched repos
           cp -v susfs/include/linux/*.h kernel_source/include/linux/ 2>/dev/null || true
           cp -v SukiSU_patch/include/linux/*.h kernel_source/include/linux/ 2>/dev/null || true
-          # List what we copied for debug
-          echo "kernel_source/include/linux content (matching susfs / lz4):"
           ls -l kernel_source/include/linux | grep -E "susfs|lz4|lz4k|lz4kd" || ls -l kernel_source/include/linux || true
 
       - name: Fix kernel/sched/rt.c printk format
         run: |
           cd "$BUILD_DIR/kernel_source"
-          # Robustly update the printk that prints rt_rq->rt_time so format matches u64.
-          # This uses Perl to handle multi-line C string concatenation and spacing variants.
           perl -0777 -pe '
             s{
               rq_of_rt_rq\(rt_rq\)->cpu\s*,\s*rt_rq->rt_time
@@ -114,16 +105,13 @@ jobs:
             }gxs;
             s{\(\%ld\)\\n"}{\(%llu\)\\n"}gxs;
           ' -i kernel/sched/rt.c || true
-          # Show context lines to confirm replacement
           sed -n '970,990p' kernel/sched/rt.c || true
           git --no-pager diff -- kernel/sched/rt.c || true
 
       - name: 6. Configure Kernel (use scripts/config to avoid malformed .config)
         run: |
           cd "$BUILD_DIR/kernel_source"
-          # start from the defconfig for the target
           make ARCH=x86_64 x86_64_arcvm_defconfig
-          # Use scripts/config to enable/force the options reliably (avoids indentation problems)
           SCRIPTS_CFG="./scripts/config"
           $SCRIPTS_CFG --enable CONFIG_KSU || true
           $SCRIPTS_CFG --enable CONFIG_KPM || true
@@ -147,21 +135,38 @@ jobs:
           $SCRIPTS_CFG --enable CONFIG_CRYPTO_LZ4K || true
           $SCRIPTS_CFG --enable CONFIG_CRYPTO_LZ4KD || true
           $SCRIPTS_CFG --enable CONFIG_CRYPTO_842 || true
-          # Try to set the default zram compressor to LZ4KD (choice) — set symbol directly
           $SCRIPTS_CFG --set-val CONFIG_ZRAM_DEF_COMP_LZ4KD y || true
           $SCRIPTS_CFG --enable CONFIG_ZRAM_WRITEBACK || true
-          # regenerate a consistent config
           make olddefconfig
 
-      - name: 7. Build bzImage
-        timeout-minutes: 40
+      - name: 7. Build bzImage (capture logs)
+        timeout-minutes: 60
         run: |
           cd "$BUILD_DIR/kernel_source"
-          make ARCH=x86_64 -j$(nproc) bzImage
-          ls -lh arch/x86/boot/bzImage
-          file arch/x86/boot/bzImage
+          set +e
+          # Verbose build and capture stdout/stderr to build.log. Use PIPESTATUS to get make exit code.
+          make ARCH=x86_64 V=1 -j$(nproc) bzImage 2>&1 | tee build.log
+          BUILD_EXIT=${PIPESTATUS[0]}
+          echo "BUILD_EXIT=$BUILD_EXIT" >> $GITHUB_ENV
+          set -e
+
+      - name: Upload kernel build log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: kernel-build-log
+          path: ${{ env.BUILD_DIR }}/kernel_source/build.log
+
+      - name: Fail if build failed
+        if: always()
+        run: |
+          if [ "${{ env.BUILD_EXIT }}" != "0" ]; then
+            echo "Kernel build failed with exit code ${{ env.BUILD_EXIT }} — build.log has been uploaded as artifact 'kernel-build-log'."
+            exit ${{ env.BUILD_EXIT }}
+          fi
 
       - name: 8. Download SUSFS Module (CI)
+        if: success()
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
@@ -172,6 +177,7 @@ jobs:
           unzip -l susfs.zip | head -3
 
       - name: 9. Pack Flashable ZIP
+        if: success()
         run: |
           cd "$BUILD_DIR"
           git clone --depth=1 https://github.com/Numbersf/AnyKernel3
@@ -182,12 +188,14 @@ jobs:
           ls -lh ../ARCVM-SUKISU-ULTRA.zip
 
       - name: 10. Pack Source Tree
+        if: success()
         run: |
           cd "$BUILD_DIR"
           tar -czf ARCVM-SUKISU-SOURCE.tar.gz kernel_source
           du -h ARCVM-SUKISU-SOURCE.tar.gz
 
       - name: 11. Upload & QR Code
+        if: success()
         run: |
           cd "$BUILD_DIR"
           upload() { curl --progress-bar -T "$1" https://transfer.sh/$(basename "$1"); echo; }
@@ -200,6 +208,7 @@ jobs:
           qrencode -t ansiutf8 "$ZIP_URL"
 
       - name: 12. Upload Artifacts
+        if: success()
         uses: actions/upload-artifact@v4
         with:
           name: ARCVM-SUKISU-ULTRA-v${{ env.KSUVER }}
@@ -209,6 +218,7 @@ jobs:
             ${{ env.BUILD_DIR }}/kernel_source/arch/x86/boot/bzImage
 
       - name: 13. SUCCESS
+        if: success()
         run: |
           echo "ARCVM ROOT READY"
           echo "ZIP: ${{ env.ZIP_URL }}"
