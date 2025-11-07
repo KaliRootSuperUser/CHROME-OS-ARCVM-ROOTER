@@ -30,6 +30,7 @@ jobs:
             device-tree-compiler clang lld llvm zip qrencode ccache
           free -h && df -h
 
+      # Setup ccache for incremental builds
       - name: 1.1. Setup ccache
         uses: hendrikmuhs/ccache-action@v1.2
         with:
@@ -86,24 +87,35 @@ jobs:
       - name: 5.1. Add missing SUSFS header files
         run: |
           cd "$BUILD_DIR"
+          # First ensure kernel source include directory exists
           mkdir -p "$BUILD_DIR/kernel_source/include/linux"
+          
+          # Directly download the headers from the repo
+          echo "Downloading SUSFS headers from GitLab..."
           wget -O "$BUILD_DIR/kernel_source/include/linux/susfs_def.h" "https://gitlab.com/simonpunk/susfs4ksu/-/raw/gki-android13-5.10/kernel_patches/include/linux/susfs_def.h"
           wget -O "$BUILD_DIR/kernel_source/include/linux/susfs.h" "https://gitlab.com/simonpunk/susfs4ksu/-/raw/gki-android13-5.10/kernel_patches/include/linux/susfs.h"
+          wget -O "$BUILD_DIR/kernel_source/include/linux/sus_su.h" "https://gitlab.com/simonpunk/susfs4ksu/-/raw/gki-android13-5.10/kernel_patches/include/linux/sus_su.h"
+          
+          # Also copy from local clone as backup
           if [ -d "$BUILD_DIR/susfs/kernel_patches/include" ]; then
-            cp -rv "$BUILD_DIR/susfs/kernel_patches/include/"* "$BUILD_DIR/kernel_source/include/"
-            echo "Copied all SUSFS headers from local clone."
+            echo "Also copying SUSFS headers from local clone as backup..."
+            cp -rv "$BUILD_DIR/susfs/kernel_patches/include/linux/"* "$BUILD_DIR/kernel_source/include/linux/"
           fi
-          ls -la "$BUILD_DIR/kernel_source/include/linux/susfs*"
-
-      - name: 5.2. Fix LSM audit patch
-        run: |
-          cd "$BUILD_DIR/kernel_source"
-          if grep -q "linux/susfs_def.h" "security/lsm_audit.c"; then
-            echo "Fixing security/lsm_audit.c to handle susfs_def.h inclusion..."
-            sed -i '/linux\/susfs_def.h/i #ifdef CONFIG_KSU_SUSFS' security/lsm_audit.c
-            sed -i '/linux\/susfs_def.h/a #endif' security/lsm_audit.c
+          
+          # Verify files exist
+          echo "Verifying SUSFS header files..."
+          find "$BUILD_DIR/kernel_source/include/linux/" -name "susfs*" -o -name "sus_su*" -type f
+          
+          # Create necessary symlinks if any required
+          ln -sf "$BUILD_DIR/kernel_source/include/linux/susfs.h" "$BUILD_DIR/kernel_source/include/susfs.h" || true
+          ln -sf "$BUILD_DIR/kernel_source/include/linux/susfs_def.h" "$BUILD_DIR/kernel_source/include/susfs_def.h" || true
+          
+          # Fix LSM audit if it includes susfs_def.h
+          if grep -q "linux/susfs_def.h" "$BUILD_DIR/kernel_source/security/lsm_audit.c" 2>/dev/null; then
+            echo "Fixing security/lsm_audit.c to conditionally include susfs_def.h..."
+            sed -i '/linux\/susfs_def.h/i\#ifdef CONFIG_KSU_SUSFS' "$BUILD_DIR/kernel_source/security/lsm_audit.c"
+            sed -i '/linux\/susfs_def.h/a\#endif' "$BUILD_DIR/kernel_source/security/lsm_audit.c"
           fi
-          echo "LSM integration fixed."
 
       - name: Fix kernel/sched/rt.c printk format
         run: |
@@ -114,6 +126,8 @@ jobs:
         run: |
           cd "$BUILD_DIR/kernel_source"
           make ARCH=x86_64 x86_64_arcvm_defconfig
+          
+          # Create kernel config using echo commands to avoid heredoc
           echo "CONFIG_KSU=y" >> .config
           echo "CONFIG_KPM=y" >> .config
           echo "CONFIG_KSU_MANUAL_HOOK=y" >> .config
@@ -138,6 +152,7 @@ jobs:
           echo "CONFIG_CRYPTO_842=y" >> .config
           echo "CONFIG_ZRAM_DEF_COMP_LZ4KD=y" >> .config
           echo "CONFIG_ZRAM_WRITEBACK=y" >> .config
+          
           sed -i 's/ -dirty//g' scripts/setlocalversion
           grep KSU .config | head -5
           
@@ -150,38 +165,50 @@ jobs:
           echo 'KBUILD_CFLAGS += -Wno-error=implicit-function-declaration -Wno-error=incompatible-pointer-types -Wno-error=format -Wno-error' >> Makefile
           
           # Ensure CONFIG_KSU_SUSFS is properly defined in autoconf.h for header checks
+          mkdir -p include/generated
           echo "#define CONFIG_KSU_SUSFS 1" >> include/generated/autoconf.h
 
-      - name: 7. Build bzImage
+      - name: 7. Create stub file for security module
+        run: |
+          cd "$BUILD_DIR/kernel_source"
+          # Create stub file to fix any missing susfs security functions
+          mkdir -p security
+          cat > security/susfs_stubs.c << 'EOC'
+          #include <linux/security.h>
+          #ifdef CONFIG_KSU_SUSFS
+          /* Stub implementations for any missing SUSFS functions */
+          #endif
+          EOC
+          # Add it to the Makefile
+          echo "obj-y += susfs_stubs.o" >> security/Makefile
+
+      - name: 8. Build bzImage
         timeout-minutes: 45
         run: |
           cd "$BUILD_DIR/kernel_source"
+          # Set up ccache in path
           export PATH="/usr/lib/ccache:$PATH"
+          # Make sure clean build happens if any previous errors
           make clean
           
+          # Debug: Check if susfs header files exist
           echo "Checking SUSFS header files before build:"
-          ls -la include/linux/susfs*
+          find include -name "susfs*" -o -name "sus_su*" -type f
           
+          # Build with ccache and error handling - first try with normal settings
           set +e
           make ARCH=x86_64 CC="ccache gcc" -j$(nproc) bzImage
           BUILD_RESULT=$?
           set -e
           
+          # If build failed, try again with verbose output and fewer jobs
           if [ $BUILD_RESULT -ne 0 ]; then
             echo "First build attempt failed, trying with verbose output and fewer jobs..."
             make clean
-            
-            # Create stub file for security module
-            echo '#include <linux/security.h>' > security/susfs_stubs.c
-            echo '#ifdef CONFIG_KSU_SUSFS' >> security/susfs_stubs.c
-            echo '/* Stub implementations for any missing SUSFS functions */' >> security/susfs_stubs.c
-            echo '#endif' >> security/susfs_stubs.c
-            
-            echo "obj-y += susfs_stubs.o" >> security/Makefile
-            
             make ARCH=x86_64 CC="ccache gcc" V=1 W=1 -j$(($(nproc) / 2)) bzImage
             BUILD_RESULT=$?
             
+            # If it still fails, try with absolute minimum settings
             if [ $BUILD_RESULT -ne 0 ]; then
               echo "Second build attempt failed, trying with minimal jobs..."
               make clean
@@ -190,6 +217,7 @@ jobs:
             fi
           fi
           
+          # Check if bzImage was created despite any warnings
           if [ -f arch/x86/boot/bzImage ]; then
             ls -lh arch/x86/boot/bzImage
             file arch/x86/boot/bzImage
@@ -199,10 +227,11 @@ jobs:
             exit 1
           fi
           
+          # Display ccache statistics
           echo "=== CCACHE STATISTICS ==="
           ccache -s
 
-      - name: 8. Download SUSFS Module (CI)
+      - name: 9. Download SUSFS Module (CI)
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
@@ -212,7 +241,7 @@ jobs:
           curl -L -H "Authorization: Bearer $GITHUB_TOKEN" -o susfs.zip "$ARTIFACT_URL"
           unzip -l susfs.zip | head -3
 
-      - name: 9. Pack Flashable ZIP
+      - name: 10. Pack Flashable ZIP
         run: |
           cd "$BUILD_DIR"
           git clone --depth=1 https://github.com/Numbersf/AnyKernel3
@@ -227,13 +256,13 @@ jobs:
             exit 1
           fi
 
-      - name: 10. Pack Source Tree
+      - name: 11. Pack Source Tree
         run: |
           cd "$BUILD_DIR"
           tar -czf ARCVM-SUKISU-SOURCE.tar.gz kernel_source
           du -h ARCVM-SUKISU-SOURCE.tar.gz
 
-      - name: 11. Upload & QR Code
+      - name: 12. Upload & QR Code
         run: |
           cd "$BUILD_DIR"
           upload() { curl --progress-bar -T "$1" https://transfer.sh/$(basename "$1"); echo; }
@@ -245,7 +274,7 @@ jobs:
           echo "BZ_URL=$BZ_URL" >> $GITHUB_ENV
           qrencode -t ansiutf8 "$ZIP_URL"
 
-      - name: 12. Upload Artifacts
+      - name: 13. Upload Artifacts
         uses: actions/upload-artifact@v4
         with:
           name: ARCVM-SUKISU-ULTRA-v${{ env.KSUVER }}
@@ -254,7 +283,7 @@ jobs:
             ${{ env.BUILD_DIR }}/ARCVM-SUKISU-SOURCE.tar.gz
             ${{ env.BUILD_DIR }}/kernel_source/arch/x86/boot/bzImage
 
-      - name: 13. SUCCESS
+      - name: 14. SUCCESS
         run: |
           echo "ARCVM ROOT READY"
           echo "ZIP: ${{ env.ZIP_URL }}"
