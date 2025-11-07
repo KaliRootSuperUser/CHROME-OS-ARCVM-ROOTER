@@ -79,6 +79,30 @@ jobs:
             cp ../SukiSU_patch/other/zram/zram_patch/5.10/lz4kd.patch . && patch -p1 < lz4kd.patch || true
           fi
           git status --short
+          
+      - name: 5.1. Add missing SUSFS header files
+        run: |
+          cd "$BUILD_DIR"
+          # Create the include/linux directory if it doesn't exist
+          mkdir -p "$BUILD_DIR/kernel_source/include/linux"
+          
+          # Download the susfs_def.h file
+          wget -O "$BUILD_DIR/kernel_source/include/linux/susfs_def.h" "https://gitlab.com/simonpunk/susfs4ksu/-/raw/gki-android13-5.10/kernel_patches/include/linux/susfs_def.h"
+          
+          # Verify the file was downloaded correctly
+          if [ -f "$BUILD_DIR/kernel_source/include/linux/susfs_def.h" ]; then
+            echo "SUSFS header file downloaded successfully."
+          else
+            echo "Failed to download SUSFS header file."
+            exit 1
+          fi
+          
+          # Check if there are other missing headers and download them too
+          if [ -d "$BUILD_DIR/susfs/kernel_patches/include" ]; then
+            cp -r "$BUILD_DIR/susfs/kernel_patches/include/"* "$BUILD_DIR/kernel_source/include/"
+            echo "Copied all SUSFS headers from local clone."
+          fi
+          
       - name: Fix kernel/sched/rt.c printk format
         run: |
           cd "$BUILD_DIR/kernel_source"
@@ -132,17 +156,21 @@ jobs:
           export PATH="/usr/lib/ccache:$PATH"
           # Make sure clean build happens if any previous errors
           make clean
+          
+          # Debug: Check if susfs_def.h exists
+          ls -la include/linux/susfs*
+          
           # Build with ccache and error handling
           set +e
           make ARCH=x86_64 CC="ccache gcc" -j$(nproc) bzImage
           BUILD_RESULT=$?
           set -e
           
-          # If build failed, try again with fewer jobs (might be memory pressure)
+          # If build failed, try again with verbose output
           if [ $BUILD_RESULT -ne 0 ]; then
-            echo "First build attempt failed, trying with fewer parallel jobs..."
+            echo "First build attempt failed, trying with verbose output..."
             make clean
-            make ARCH=x86_64 CC="ccache gcc" -j$(($(nproc) / 2)) bzImage
+            make ARCH=x86_64 CC="ccache gcc" V=1 -j$(($(nproc) / 2)) bzImage
           fi
           
           # Check if bzImage was created despite any warnings
@@ -152,7 +180,16 @@ jobs:
             echo "Build completed successfully, bzImage created."
           else
             echo "Failed to build bzImage."
-            exit 1
+            # Don't exit yet, try one more time with minimal settings
+            echo "Trying one more time with minimal parallel jobs..."
+            make clean
+            make ARCH=x86_64 CC="ccache gcc" -j2 bzImage
+            
+            if [ -f arch/x86/boot/bzImage ]; then
+              echo "Final build attempt successful."
+            else
+              exit 1
+            fi
           fi
           
           # Display ccache statistics
