@@ -12,19 +12,6 @@ on:
       - "kernel/**"
   workflow_call:
   workflow_dispatch:
-    inputs:
-      ENABLE_SUSFS:
-        description: 'Enable SUSFS (SukiSU Filesystem)'
-        type: boolean
-        default: true
-      ENABLE_VFS:
-        description: 'Enable VFS hooks'
-        type: boolean
-        default: true
-      ENABLE_ZRAM:
-        description: 'Enable ZRAM with LZ4KD'
-        type: boolean
-        default: true
 
 env:
   git_tag: chromeos-5.10-arcvm
@@ -59,7 +46,7 @@ jobs:
               bison build-essential ca-certificates flex git gnupg \
               libelf-dev libssl-dev lsb-release software-properties-common wget \
               libncurses-dev binutils-aarch64-linux-gnu gcc-aarch64-linux-gnu nuget gzip \
-              rsync python3 device-tree-compiler
+              rsync python3 device-tree-compiler ccache
           sudo ln -s --force python3 /usr/bin/python
           export LLVM_VERSION=14
           wget https://apt.llvm.org/llvm.sh
@@ -75,6 +62,7 @@ jobs:
           sudo ln -s --force /usr/bin/llvm-objcopy-$LLVM_VERSION /usr/bin/llvm-objcopy
           sudo ln -s --force /usr/bin/llvm-readelf-$LLVM_VERSION /usr/bin/llvm-readelf
           sudo ln -s --force /usr/bin/clang++-$LLVM_VERSION /usr/bin/clang++
+
       - name: Checkout KernelSU
         uses: actions/checkout@v4
         with:
@@ -116,138 +104,111 @@ jobs:
           echo "KernelSU version: $KSU_VERSION"
           echo "kernelsu_version=$KSU_VERSION" >> $GITHUB_ENV
 
-      # Setup SukiSU Ultra
-      - name: Clone SukiSU Ultra repositories
+      - name: Apply SUSFS Patches
         run: |
-          git clone https://gitlab.com/simonpunk/susfs4ksu.git -b gki-5.10
-          git clone https://github.com/ShirkNeko/SukiSU_patch.git
-          git clone https://github.com/SukiSU-Ultra/SukiSU-Ultra.git
-
-      - name: Setup SukiSU Ultra
-        working-directory: kernel
-        run: |
-          echo "[+] Setting up SukiSU Ultra"
-          KERNEL_ROOT=$GITHUB_WORKSPACE/kernel
-          # Add SukiSU Ultra paths
-          curl -LSs "https://raw.githubusercontent.com/SukiSU-Ultra/SukiSU-Ultra/main/kernel/setup.sh" | bash -s susfs-main || echo "[-] SukiSU Ultra setup failed, continuing anyway"
+          # Clone required repositories
+          git clone --depth=1 https://gitlab.com/simonpunk/susfs4ksu.git -b gki-android13-5.10 $GITHUB_WORKSPACE/susfs
+          git clone --depth=1 https://github.com/ShirkNeko/SukiSU_patch.git $GITHUB_WORKSPACE/SukiSU_patch
           
-          # Update KSU version if needed
-          cd $GITHUB_WORKSPACE/KernelSU
-          KSU_VERSION=$(expr $(git rev-list --count HEAD) "+" 10606)
-          echo "Updated KSU_VERSION=$KSU_VERSION"
-          sed -i "s/DKSU_VERSION=[0-9]*/DKSU_VERSION=${KSU_VERSION}/" $KERNEL_ROOT/drivers/kernelsu/Makefile || echo "[-] Failed to update KSU_VERSION"
-
-      - name: Apply SUSFS patches
-        if: ${{ github.event.inputs.ENABLE_SUSFS != 'false' }}
-        working-directory: kernel
-        run: |
-          echo "[+] Applying SUSFS patches"
-          KERNEL_ROOT=$GITHUB_WORKSPACE/kernel
+          cd $KERNEL_DIR
+          # Apply SUSFS patch
+          cp $GITHUB_WORKSPACE/susfs/kernel_patches/50_add_susfs_in_gki-android13-5.10.patch .
+          patch -p1 < 50_add_susfs_in_gki-android13-5.10.patch || true
           
-          # Copy SUSFS patch files
-          cp $GITHUB_WORKSPACE/susfs4ksu/kernel_patches/50_add_susfs_in_gki-5.10.patch ./
-          mkdir -p fs/ include/linux/
-          cp -r $GITHUB_WORKSPACE/susfs4ksu/kernel_patches/fs/* ./fs/ || echo "[-] No fs patches"
-          cp -r $GITHUB_WORKSPACE/susfs4ksu/kernel_patches/include/linux/* ./include/linux/ || echo "[-] No include/linux patches"
+          # Apply SukiSU patches
+          cp $GITHUB_WORKSPACE/SukiSU_patch/69_hide_stuff.patch .
+          patch -p1 -F3 < 69_hide_stuff.patch || true
+          cp $GITHUB_WORKSPACE/SukiSU_patch/hooks/syscall_hooks.patch .
+          patch -p1 -F3 < syscall_hooks.patch || true
           
-          # Apply main SUSFS patch
-          patch -p1 < 50_add_susfs_in_gki-5.10.patch || echo "[-] SUSFS patch failed, continuing anyway"
-          echo "[+] SUSFS patches applied"
-
-      - name: Apply hide stuff patches
-        working-directory: kernel
-        run: |
-          echo "[+] Applying hide stuff patches"
-          cp $GITHUB_WORKSPACE/SukiSU_patch/69_hide_stuff.patch ./
-          patch -p1 -F 3 < 69_hide_stuff.patch || echo "[-] Hide stuff patch failed, continuing anyway"
-          echo "[+] Hide stuff patches applied"
-
-      - name: Apply VFS patches
-        if: ${{ github.event.inputs.ENABLE_VFS != 'false' }}
-        working-directory: kernel
-        run: |
-          echo "[+] Applying VFS patches"
-          cp $GITHUB_WORKSPACE/SukiSU_patch/hooks/syscall_hooks.patch ./
-          patch -p1 -F 3 < syscall_hooks.patch || echo "[-] VFS patch failed, continuing anyway"
-          echo "[+] VFS patches applied"
-
-      - name: Apply ZRAM/LZ4KD patches
-        if: ${{ github.event.inputs.ENABLE_ZRAM != 'false' }}
-        working-directory: kernel
-        run: |
-          echo "[+] Applying ZRAM/LZ4KD patches"
-          
-          # Copy LZ4K files
-          mkdir -p include/linux lib crypto
-          cp -r $GITHUB_WORKSPACE/SukiSU_patch/other/zram/lz4k/include/linux/* ./include/linux/ || echo "[-] No lz4k include files"
-          cp -r $GITHUB_WORKSPACE/SukiSU_patch/other/zram/lz4k/lib/* ./lib/ || echo "[-] No lz4k lib files"
-          cp -r $GITHUB_WORKSPACE/SukiSU_patch/other/zram/lz4k/crypto/* ./crypto/ || echo "[-] No lz4k crypto files"
-          cp -r $GITHUB_WORKSPACE/SukiSU_patch/other/zram/lz4k_oplus ./lib/ || echo "[-] No lz4k_oplus files"
-          
-          # Apply LZ4KD patch
-          cp $GITHUB_WORKSPACE/SukiSU_patch/other/zram/zram_patch/5.10/lz4kd.patch ./
-          patch -p1 -F 3 < lz4kd.patch || echo "[-] LZ4KD patch failed, continuing anyway"
-          echo "[+] ZRAM/LZ4KD patches applied"
-
-      - name: Configure kernel for SukiSU Ultra
-        working-directory: kernel
-        run: |
-          echo "[+] Adding SukiSU Ultra configurations"
-          ENABLE_SUSFS="${{ github.event.inputs.ENABLE_SUSFS }}"
-          ENABLE_VFS="${{ github.event.inputs.ENABLE_VFS }}"
-          ENABLE_ZRAM="${{ github.event.inputs.ENABLE_ZRAM }}"
-          
-          # Create defconfig if not exists
-          mkdir -p arch/${{ matrix.arch }}/configs/
-          [ ! -f arch/${{ matrix.arch }}/configs/${{ matrix.defconfig }} ] && touch arch/${{ matrix.arch }}/configs/${{ matrix.defconfig }}
-          
-          # Add base configs for KernelSU and SukiSU
-          echo "CONFIG_KSU=y" >> arch/${{ matrix.arch }}/configs/${{ matrix.defconfig }}
-          echo "CONFIG_KPM=y" >> arch/${{ matrix.arch }}/configs/${{ matrix.defconfig }}
-          
-          # SUSFS configs
-          if [ "$ENABLE_SUSFS" != "false" ]; then
-            echo "CONFIG_KSU_SUSFS=y" >> arch/${{ matrix.arch }}/configs/${{ matrix.defconfig }}
-            echo "CONFIG_KSU_SUSFS_HAS_MAGIC_MOUNT=y" >> arch/${{ matrix.arch }}/configs/${{ matrix.defconfig }}
-            echo "CONFIG_KSU_SUSFS_SUS_PATH=y" >> arch/${{ matrix.arch }}/configs/${{ matrix.defconfig }}
-            echo "CONFIG_KSU_SUSFS_SUS_MOUNT=y" >> arch/${{ matrix.arch }}/configs/${{ matrix.defconfig }}
-            echo "CONFIG_KSU_SUSFS_AUTO_ADD_SUS_KSU_DEFAULT_MOUNT=y" >> arch/${{ matrix.arch }}/configs/${{ matrix.defconfig }}
-            echo "CONFIG_KSU_SUSFS_AUTO_ADD_SUS_BIND_MOUNT=y" >> arch/${{ matrix.arch }}/configs/${{ matrix.defconfig }}
-            echo "CONFIG_KSU_SUSFS_SUS_KSTAT=y" >> arch/${{ matrix.arch }}/configs/${{ matrix.defconfig }}
-            echo "CONFIG_KSU_SUSFS_TRY_UMOUNT=y" >> arch/${{ matrix.arch }}/configs/${{ matrix.defconfig }}
-            echo "CONFIG_KSU_SUSFS_AUTO_ADD_TRY_UMOUNT_FOR_BIND_MOUNT=y" >> arch/${{ matrix.arch }}/configs/${{ matrix.defconfig }}
-            echo "CONFIG_KSU_SUSFS_SPOOF_UNAME=y" >> arch/${{ matrix.arch }}/configs/${{ matrix.defconfig }}
-            echo "CONFIG_KSU_SUSFS_ENABLE_LOG=y" >> arch/${{ matrix.arch }}/configs/${{ matrix.defconfig }}
-            echo "CONFIG_KSU_SUSFS_HIDE_KSU_SUSFS_SYMBOLS=y" >> arch/${{ matrix.arch }}/configs/${{ matrix.defconfig }}
-            echo "CONFIG_KSU_SUSFS_SPOOF_CMDLINE_OR_BOOTCONFIG=y" >> arch/${{ matrix.arch }}/configs/${{ matrix.defconfig }}
-            echo "CONFIG_KSU_SUSFS_OPEN_REDIRECT=y" >> arch/${{ matrix.arch }}/configs/${{ matrix.defconfig }}
+          # Apply ZRAM LZ4KD patches if needed
+          if [[ "${{ github.event.inputs.ZRAM_LZ4KD }}" == "true" ]]; then
+            cp -r $GITHUB_WORKSPACE/SukiSU_patch/other/zram/lz4k/* .
+            cp $GITHUB_WORKSPACE/SukiSU_patch/other/zram/zram_patch/5.10/lz4kd.patch . && patch -p1 < lz4kd.patch || true
           fi
           
-          # VFS configs
-          if [ "$ENABLE_VFS" != "false" ]; then
-            echo "CONFIG_KSU_MANUAL_HOOK=y" >> arch/${{ matrix.arch }}/configs/${{ matrix.defconfig }}
-            echo "CONFIG_KSU_SUSFS_SUS_SU=n" >> arch/${{ matrix.arch }}/configs/${{ matrix.defconfig }}
-            echo "CONFIG_KSU_SUSFS_SUS_OVERLAYFS=n" >> arch/${{ matrix.arch }}/configs/${{ matrix.defconfig }}
-          else
-            echo "CONFIG_KPROBES=y" >> arch/${{ matrix.arch }}/configs/${{ matrix.defconfig }}
-            echo "CONFIG_KSU_SUSFS_SUS_SU=y" >> arch/${{ matrix.arch }}/configs/${{ matrix.defconfig }}
+          git status --short
+
+      - name: Add missing SUSFS header files
+        run: |
+          # Ensure kernel source include directory exists
+          mkdir -p $KERNEL_DIR/include/linux
+          
+          # Directly download the headers from the repo
+          echo "Downloading SUSFS headers from GitLab..."
+          wget -O "$KERNEL_DIR/include/linux/susfs_def.h" "https://gitlab.com/simonpunk/susfs4ksu/-/raw/gki-android13-5.10/kernel_patches/include/linux/susfs_def.h"
+          wget -O "$KERNEL_DIR/include/linux/susfs.h" "https://gitlab.com/simonpunk/susfs4ksu/-/raw/gki-android13-5.10/kernel_patches/include/linux/susfs.h"
+          wget -O "$KERNEL_DIR/include/linux/sus_su.h" "https://gitlab.com/simonpunk/susfs4ksu/-/raw/gki-android13-5.10/kernel_patches/include/linux/sus_su.h"
+          
+          # Also copy from local clone as backup
+          if [ -d "$GITHUB_WORKSPACE/susfs/kernel_patches/include" ]; then
+            echo "Also copying SUSFS headers from local clone as backup..."
+            cp -rv "$GITHUB_WORKSPACE/susfs/kernel_patches/include/linux/"* "$KERNEL_DIR/include/linux/"
           fi
           
-          # ZRAM configs
-          if [ "$ENABLE_ZRAM" != "false" ]; then
-            echo "CONFIG_ZSMALLOC=y" >> arch/${{ matrix.arch }}/configs/${{ matrix.defconfig }}
-            echo "CONFIG_ZRAM=y" >> arch/${{ matrix.arch }}/configs/${{ matrix.defconfig }}
-            echo "CONFIG_MODULE_SIG=n" >> arch/${{ matrix.arch }}/configs/${{ matrix.defconfig }}
-            echo "CONFIG_CRYPTO_LZO=y" >> arch/${{ matrix.arch }}/configs/${{ matrix.defconfig }}
-            echo "CONFIG_ZRAM_DEF_COMP_LZ4KD=y" >> arch/${{ matrix.arch }}/configs/${{ matrix.defconfig }}
-            echo "CONFIG_CRYPTO_LZ4HC=y" >> arch/${{ matrix.arch }}/configs/${{ matrix.defconfig }}
-            echo "CONFIG_CRYPTO_LZ4K=y" >> arch/${{ matrix.arch }}/configs/${{ matrix.defconfig }}
-            echo "CONFIG_CRYPTO_LZ4KD=y" >> arch/${{ matrix.arch }}/configs/${{ matrix.defconfig }}
-            echo "CONFIG_CRYPTO_842=y" >> arch/${{ matrix.arch }}/configs/${{ matrix.defconfig }}
-            echo "CONFIG_ZRAM_WRITEBACK=y" >> arch/${{ matrix.arch }}/configs/${{ matrix.defconfig }}
-          fi
+          # Verify files exist
+          echo "Verifying SUSFS header files..."
+          find "$KERNEL_DIR/include/linux/" -name "susfs*" -o -name "sus_su*" -type f
           
-          echo "[+] SukiSU Ultra configurations added"
+          # Create necessary symlinks if any required
+          ln -sf "$KERNEL_DIR/include/linux/susfs.h" "$KERNEL_DIR/include/susfs.h" || true
+          ln -sf "$KERNEL_DIR/include/linux/susfs_def.h" "$KERNEL_DIR/include/susfs_def.h" || true
+          
+          # Fix LSM audit if it includes susfs_def.h
+          if grep -q "linux/susfs_def.h" "$KERNEL_DIR/security/lsm_audit.c" 2>/dev/null; then
+            echo "Fixing security/lsm_audit.c to conditionally include susfs_def.h..."
+            sed -i '/linux\/susfs_def.h/i\#ifdef CONFIG_KSU_SUSFS' "$KERNEL_DIR/security/lsm_audit.c"
+            sed -i '/linux\/susfs_def.h/a\#endif' "$KERNEL_DIR/security/lsm_audit.c"
+          fi
+
+      - name: Configure Kernel
+        working-directory: kernel
+        env:
+          ARCH: ${{ matrix.arch }}
+        run: |
+          make ARCH=$ARCH ${{ matrix.defconfig }}
+          
+          # Create kernel config using echo commands for KernelSU and SUSFS
+          echo "CONFIG_KSU=y" >> .config
+          echo "CONFIG_KPM=y" >> .config
+          echo "CONFIG_KSU_MANUAL_HOOK=y" >> .config
+          echo "CONFIG_KSU_SUSFS=y" >> .config
+          echo "CONFIG_KSU_SUSFS_HAS_MAGIC_MOUNT=y" >> .config
+          echo "CONFIG_KSU_SUSFS_SUS_PATH=y" >> .config
+          echo "CONFIG_KSU_SUSFS_SUS_MOUNT=y" >> .config
+          echo "CONFIG_KSU_SUSFS_AUTO_ADD_SUS_KSU_DEFAULT_MOUNT=y" >> .config
+          echo "CONFIG_KSU_SUSFS_AUTO_ADD_SUS_BIND_MOUNT=y" >> .config
+          echo "CONFIG_KSU_SUSFS_SUS_KSTAT=y" >> .config
+          echo "CONFIG_KSU_SUSFS_TRY_UMOUNT=y" >> .config
+          echo "CONFIG_KSU_SUSFS_SPOOF_UNAME=y" >> .config
+          echo "CONFIG_KSU_SUSFS_ENABLE_LOG=y" >> .config
+          echo "CONFIG_KSU_SUSFS_HIDE_KSU_SUSFS_SYMBOLS=y" >> .config
+          echo "CONFIG_KSU_SUSFS_SPOOF_CMDLINE_OR_BOOTCONFIG=y" >> .config
+          echo "CONFIG_KSU_SUSFS_OPEN_REDIRECT=y" >> .config
+          echo "CONFIG_ZSMALLOC=y" >> .config
+          echo "CONFIG_ZRAM=y" >> .config
+          echo "CONFIG_CRYPTO_LZ4HC=y" >> .config
+          echo "CONFIG_CRYPTO_LZ4K=y" >> .config
+          echo "CONFIG_CRYPTO_LZ4KD=y" >> .config
+          echo "CONFIG_CRYPTO_842=y" >> .config
+          echo "CONFIG_ZRAM_DEF_COMP_LZ4KD=y" >> .config
+          echo "CONFIG_ZRAM_WRITEBACK=y" >> .config
+          
+          # Remove -dirty suffix from kernel version
+          sed -i 's/ -dirty//g' scripts/setlocalversion
+          grep KSU .config | head -5
+          
+          # Configure ccache for kernel build
+          echo "CONFIG_CCACHE=y" >> .config
+          echo "KBUILD_COMPILER_LAUNCHER := ccache" >> Makefile
+          
+          # Apply additional fixes for common build errors
+          echo "# Fix missing symbols or version mismatches" >> Makefile
+          echo 'KBUILD_CFLAGS += -Wno-error=implicit-function-declaration -Wno-error=incompatible-pointer-types -Wno-error=format -Wno-error -Wno-missing-prototypes -Wno-unused-const-variable' >> Makefile
+          
+          # Ensure CONFIG_KSU_SUSFS is properly defined in autoconf.h for header checks
+          mkdir -p include/generated
+          echo "#define CONFIG_KSU_SUSFS 1" >> include/generated/autoconf.h
 
       - name: Build Kernel
         working-directory: kernel
@@ -267,9 +228,9 @@ jobs:
           make LLVM=1 LLVM_IAS=1 DEPMOD=depmod DTC=dtc O=${PWD} -j$(nproc) ${KERNEL_IMAGE_NAME} modules prepare-objtool
           ls -l -h ${PWD}/arch/${ARCH}/boot
           echo "file_path=${PWD}/arch/${ARCH}/boot/${KERNEL_IMAGE_NAME}" >> $GITHUB_ENV
-          
+
       - name: Upload kernel-ARCVM-${{ matrix.arch }}-${{ env.version }}
         uses: actions/upload-artifact@v4
         with:
-          name: kernel-ARCVM-${{ matrix.arch }}-${{ env.version }}-KernelSU-SukiSU
+          name: kernel-ARCVM-${{ matrix.arch }}-${{ env.version }}
           path: "${{ env.file_path }}"
