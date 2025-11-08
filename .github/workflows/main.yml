@@ -39,6 +39,7 @@ jobs:
       ROOT_DIR: /
       KERNEL_DIR: ${{ github.workspace }}/kernel
       BUILD_DIR: ${{ github.workspace }}
+      KSUVER: 10400  # Default value, will be updated by KernelSU setup step
 
     steps:
       - name: Install Build Tools
@@ -229,15 +230,15 @@ jobs:
           if [ ! -f "drivers/kernelsu/Kconfig" ]; then
             echo "Creating minimal KernelSU Kconfig:"
             mkdir -p drivers/kernelsu
-            cat > drivers/kernelsu/Kconfig << 'EOF'
-            config KSU
-            tristate "Enable KernelSU support"
-            depends on !GENERIC_KERNEL_EXECVE
-            default n
-            help
-            Enable KernelSU for kernel-level root capabilities.
-            EOF
-          fi
+            cat > drivers/kernelsu/Kconfig << EOF
+              config KSU
+              tristate "Enable KernelSU support"
+              depends on !GENERIC_KERNEL_EXECVE
+              default n
+              help
+               Enable KernelSU for kernel-level root capabilities.
+               EOF
+               fi
           
           # Then run the defconfig
           make ARCH=$ARCH ${{ matrix.defconfig }}
@@ -337,12 +338,12 @@ jobs:
           
           # Create a simple README in the package
           cat > $BUILD_DIR/package/README.txt << EOF
-             ARCVM SUKISU Kernel v${{ env.kernelsu_version }}
-             ChromeOS ARCVM ${{ env.version }} with KernelSU and SUSFS
-             Architecture: ${{ matrix.arch }}
+           ARCVM SUKISU Kernel v${{ env.KSUVER }}
+           ChromeOS ARCVM ${{ env.version }} with KernelSU and SUSFS
+           Architecture: ${{ matrix.arch }}
 
-             This package contains the kernel image with KernelSU integration.
-             EOF
+           This package contains the kernel image with KernelSU integration.
+              EOF
           
           cd $BUILD_DIR
           zip -r ARCVM-SUKISU-ULTRA.zip package/
