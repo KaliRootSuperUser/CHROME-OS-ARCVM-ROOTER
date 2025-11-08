@@ -165,16 +165,29 @@ jobs:
           # Create stub file to fix any missing susfs security functions
           mkdir -p security
           cat > security/susfs_stubs.c << 'EOC'
+          /* SUSFS stub implementations for kernel security module functions
+           *
+           * This file provides stub implementations of the SUSFS security functions
+           * that might be needed by other parts of the kernel.
+           */
           #include <linux/security.h>
           #include <linux/lsm_hooks.h>
+          #include <linux/module.h>
 
           #ifdef CONFIG_KSU_SUSFS
-          /* Stub implementations for any missing SUSFS functions */
+
+          /* Function prototypes - declare these before implementation */
+          int susfs_security_init(void);
+          int susfs_inode_permission(struct inode *inode, int mask);
+          int susfs_file_permission(struct file *file, int mask);
+          int susfs_path_mount(const char *dev_name, const struct path *path,
+                              const char *type, unsigned long flags, void *data);
 
           /* Basic security hooks for SUSFS that might be needed */
           int susfs_security_init(void)
           {
               /* Empty stub implementation */
+              pr_info("SUSFS: security init stub called\n");
               return 0;
           }
 
@@ -199,10 +212,11 @@ jobs:
           }
 
           /* Export symbols so they can be used elsewhere */
-          EXPORT_SYMBOL(susfs_security_init);
-          EXPORT_SYMBOL(susfs_inode_permission);
-          EXPORT_SYMBOL(susfs_file_permission);
-          EXPORT_SYMBOL(susfs_path_mount);
+          EXPORT_SYMBOL_GPL(susfs_security_init);
+          EXPORT_SYMBOL_GPL(susfs_inode_permission);
+          EXPORT_SYMBOL_GPL(susfs_file_permission);
+          EXPORT_SYMBOL_GPL(susfs_path_mount);
+
           #endif /* CONFIG_KSU_SUSFS */
           EOC
           # Add it to the Makefile
@@ -238,8 +252,10 @@ jobs:
               echo "Second build attempt failed, trying with minimal jobs..."
               make clean
               make ARCH=x86_64 CC="ccache gcc" -j2 security/built-in.a || true
-              make ARCH=x86_64 CC="ccache gcc" KCFLAGS="-Wno-error" -j2 bzImage
-            fi
+              # For the build step, add these flags to suppress warnings
+            make ARCH=x86_64 CC="ccache gcc" KCFLAGS="-Wno-missing-prototypes -Wno-unused-const-variable" -j$(nproc) bzImage
+  
+          fi
           fi
           
           # Check if bzImage was created despite any warnings
@@ -252,9 +268,9 @@ jobs:
             exit 1
           fi
           
-          # Display ccache statistics
-          echo "=== CCACHE STATISTICS ==="
-          ccache -s
+        # Display ccache statistics
+       echo "=== CCACHE STATISTICS ==="
+       ccache -s
       - name: 9. Download SUSFS Module (CI)
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
