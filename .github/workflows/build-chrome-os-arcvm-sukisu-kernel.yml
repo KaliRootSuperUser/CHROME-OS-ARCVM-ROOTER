@@ -19,7 +19,6 @@ env:
 jobs:
   build:
     if: github.event_name != 'pull_request' || (github.event_name == 'pull_request' && !github.event.pull_request.draft)
-    # Focus only on x86_64 architecture
     strategy:
       matrix:
         include:
@@ -27,8 +26,13 @@ jobs:
             kernel_image_name: bzImage
             build_config: build.config.gki.x86_64
             defconfig: x86_64_arcvm_defconfig
+          # Comment out arm64 for now to focus on fixing x86_64
+          # - arch: arm64
+          #   kernel_image_name: Image
+          #   build_config: build.config.gki.aarch64
+          #   defconfig: arm64_arcvm_defconfig
 
-    name: Build ChromeOS ARCVM kernel (${{ matrix.arch }})
+    name: Build ChromeOS ARCVM kernel
     runs-on: ubuntu-22.04
     env:
       LTO: thin
@@ -60,14 +64,30 @@ jobs:
           sudo ln -s --force /usr/bin/llvm-readelf-$LLVM_VERSION /usr/bin/llvm-readelf
           sudo ln -s --force /usr/bin/clang++-$LLVM_VERSION /usr/bin/clang++
 
+      # Important: Check out both the main repo AND KernelSU in one step for proper linking
+      - name: Checkout Repositories
+        uses: actions/checkout@v4
+        with:
+          path: main
+
       - name: Checkout KernelSU
         uses: actions/checkout@v4
         with:
+          repository: tiann/KernelSU
           path: KernelSU
           fetch-depth: 0
 
       - name: Setup kernel source
-        run: git clone https://chromium.googlesource.com/chromiumos/third_party/kernel.git -b ${{ env.git_tag }} --depth=1
+        run: |
+          git clone https://chromium.googlesource.com/chromiumos/third_party/kernel.git -b ${{ env.git_tag }} --depth=1
+          # Create required directories
+          mkdir -p $KERNEL_DIR/drivers/kernelsu
+          
+          # Debug output to verify directory structure
+          echo "Directory structure:"
+          ls -la
+          echo "KernelSU contents:"
+          ls -la KernelSU
 
       - name: Extract version from Makefile
         working-directory: kernel
@@ -83,22 +103,33 @@ jobs:
           echo "[+] KernelSU setup"
           KERNEL_ROOT=$GITHUB_WORKSPACE/kernel
           echo "[+] KERNEL_ROOT: $KERNEL_ROOT"
+          echo "[+] KernelSU path: $GITHUB_WORKSPACE/KernelSU"
           
-          # Create KernelSU directories in the kernel tree
-          mkdir -p $KERNEL_ROOT/drivers/kernelsu
+          # Debug output
+          echo "Checking KernelSU structure:"
+          find $GITHUB_WORKSPACE/KernelSU -type d | sort
           
           echo "[+] Copy KernelSU driver to $KERNEL_ROOT/drivers/kernelsu"
-          cp -r $GITHUB_WORKSPACE/KernelSU/kernel/* $KERNEL_ROOT/drivers/kernelsu/
-          
-          # Verify KernelSU files were copied correctly
-          echo "[+] Verifying KernelSU driver files:"
-          ls -la $KERNEL_ROOT/drivers/kernelsu/
+          # First make sure the kernelsu directory exists in the KernelSU repo
+          if [ -d "$GITHUB_WORKSPACE/KernelSU/kernel" ]; then
+            cp -r $GITHUB_WORKSPACE/KernelSU/kernel/* $KERNEL_ROOT/drivers/kernelsu/
+          else
+            echo "[!] ERROR: KernelSU kernel directory not found!"
+            exit 1
+          fi
           
           echo "[+] Add KernelSU driver to Makefile"
           DRIVER_MAKEFILE=$KERNEL_ROOT/drivers/Makefile
           DRIVER_KCONFIG=$KERNEL_ROOT/drivers/Kconfig
+          
+          echo "[+] Check existence of destination files"
+          ls -la $DRIVER_MAKEFILE $DRIVER_KCONFIG
+          
           grep -q "kernelsu" "$DRIVER_MAKEFILE" || printf "\nobj-\$(CONFIG_KSU) += kernelsu/\n" >> "$DRIVER_MAKEFILE"
           grep -q "kernelsu" "$DRIVER_KCONFIG" || sed -i "/endmenu/i\\source \"drivers/kernelsu/Kconfig\"" "$DRIVER_KCONFIG"
+          
+          echo "[+] Verify Kconfig file exists"
+          ls -la $KERNEL_ROOT/drivers/kernelsu/Kconfig
           
           echo "[+] Apply KernelSU patches"
           cd $KERNEL_ROOT && git apply $GITHUB_WORKSPACE/KernelSU/.github/patches/5.10/*.patch || echo "[-] No patch found"
@@ -110,90 +141,20 @@ jobs:
           echo "KernelSU version: $KSU_VERSION"
           echo "kernelsu_version=$KSU_VERSION" >> $GITHUB_ENV
 
-      - name: Ensure KernelSU config file exists
+      - name: Verify KernelSU files
         run: |
-          # Check if Kconfig exists
-          if [ ! -f "$KERNEL_DIR/drivers/kernelsu/Kconfig" ]; then
-            echo "ERROR: KernelSU Kconfig file is missing!"
-            echo "Creating minimal Kconfig file to prevent build failure"
-            
-            # Create a minimal Kconfig file
-            mkdir -p "$KERNEL_DIR/drivers/kernelsu"
-            cat > "$KERNEL_DIR/drivers/kernelsu/Kconfig" << 'EOL'
-          config KSU
-            tristate "KernelSU support"
-            depends on MODULES
-            default y
-            help
-              Enable KernelSU support
-            
-          config KPM
-            bool "KernelSU Package Manager"
-            depends on KSU
-            default y
-            help
-              Enable KernelSU Package Manager
-              
-          config KSU_MANUAL_HOOK
-            bool "KernelSU manual hook support"
-            depends on KSU
-            default n
-            help
-              Enable KernelSU manual hook support
-              
-          config KSU_SUSFS
-            bool "KernelSU SUSFS support"
-            depends on KSU
-            default n
-            help
-              Enable KernelSU SUSFS support
-          EOL
-          else
-            echo "KernelSU Kconfig file found."
-            cat "$KERNEL_DIR/drivers/kernelsu/Kconfig"
-          fi
+          echo "Checking if KernelSU Kconfig exists:"
+          ls -la $KERNEL_DIR/drivers/kernelsu/
+          echo "Contents of drivers directory:"
+          ls -la $KERNEL_DIR/drivers/
           
-          # Check if core.c exists
-          if [ ! -f "$KERNEL_DIR/drivers/kernelsu/core.c" ]; then
-            echo "ERROR: KernelSU core.c file is missing!"
-            ls -la "$GITHUB_WORKSPACE/KernelSU/kernel/"
-            echo "Creating minimal core.c file to prevent build failure"
-            
-            # Create a minimal core.c file
-            cat > "$KERNEL_DIR/drivers/kernelsu/core.c" << 'EOL'
-          #include <linux/module.h>
-          #include <linux/init.h>
+          # Check if the file was included in Makefile
+          echo "Checking if kernelsu is included in drivers/Makefile:"
+          grep -n kernelsu $KERNEL_DIR/drivers/Makefile
           
-          static int __init ksu_init(void)
-          {
-              pr_info("KernelSU initialized\n");
-              return 0;
-          }
-          
-          static void __exit ksu_exit(void)
-          {
-              pr_info("KernelSU exited\n");
-          }
-          
-          module_init(ksu_init);
-          module_exit(ksu_exit);
-          
-          MODULE_AUTHOR("KernelSU");
-          MODULE_LICENSE("GPL");
-          MODULE_DESCRIPTION("KernelSU Manager");
-          EOL
-          else
-            echo "KernelSU core.c file found."
-          fi
-          
-          # Create a minimal Makefile if it doesn't exist
-          if [ ! -f "$KERNEL_DIR/drivers/kernelsu/Makefile" ]; then
-            echo "Creating minimal Makefile for KernelSU"
-            cat > "$KERNEL_DIR/drivers/kernelsu/Makefile" << 'EOL'
-          obj-$(CONFIG_KSU) += ksu.o
-          ksu-y := core.o
-          EOL
-          fi
+          # Check if the file was included in Kconfig
+          echo "Checking if kernelsu is included in drivers/Kconfig:"
+          grep -n kernelsu $KERNEL_DIR/drivers/Kconfig
 
       - name: Apply SUSFS Patches
         run: |
@@ -257,15 +218,28 @@ jobs:
         env:
           ARCH: ${{ matrix.arch }}
         run: |
-          # First create a minimal config file with KSU enabled
-          mkdir -p arch/x86/configs
-          echo "Ensuring ${{ matrix.defconfig }} exists"
-          touch arch/x86/configs/${{ matrix.defconfig }}
+          # Check for KernelSU Kconfig before running defconfig
+          echo "Checking KernelSU Kconfig file:"
+          ls -la drivers/kernelsu/Kconfig
           
-          # Generate a default x86_64 config first
-          make ARCH=$ARCH defconfig
+          # Create minimal KernelSU Kconfig if it doesn't exist
+          if [ ! -f "drivers/kernelsu/Kconfig" ]; then
+            echo "Creating minimal KernelSU Kconfig:"
+            mkdir -p drivers/kernelsu
+            cat > drivers/kernelsu/Kconfig << 'EOF'
+          config KSU
+          tristate "Enable KernelSU support"
+          depends on !GENERIC_KERNEL_EXECVE
+          default n
+          help
+          Enable KernelSU for kernel-level root capabilities.
+          EOF
+          fi
           
-          # Now add our custom configurations
+          # Then run the defconfig
+          make ARCH=$ARCH ${{ matrix.defconfig }}
+          
+          # Create kernel config using echo commands for KernelSU and SUSFS
           echo "CONFIG_KSU=y" >> .config
           echo "CONFIG_KPM=y" >> .config
           echo "CONFIG_KSU_MANUAL_HOOK=y" >> .config
@@ -306,10 +280,6 @@ jobs:
           # Ensure CONFIG_KSU_SUSFS is properly defined in autoconf.h for header checks
           mkdir -p include/generated
           echo "#define CONFIG_KSU_SUSFS 1" >> include/generated/autoconf.h
-          
-          # Save the current config as our defconfig
-          mkdir -p arch/x86/configs
-          cp .config arch/x86/configs/${{ matrix.defconfig }}
 
       - name: Build Kernel
         working-directory: kernel
@@ -317,38 +287,38 @@ jobs:
           KERNEL_IMAGE_NAME: ${{ matrix.kernel_image_name }}
           ARCH: ${{ matrix.arch }}
         run: |
-          # Skip sourcing build.config which might not exist
-          # set -a && . ${{ matrix.build_config }}; set +a
+          # Check for the build config file before sourcing
+          if [ -f "${{ matrix.build_config }}" ]; then
+            set -a && . ${{ matrix.build_config }}; set +a
+          else
+            echo "Build config file ${{ matrix.build_config }} not found. Proceeding without it."
+          fi
+          
           export DEFCONFIG=${{ matrix.defconfig }}
           if [ ! -z ${{ vars.EXPECTED_SIZE }} ] && [ ! -z ${{ vars.EXPECTED_HASH }} ]; then
             export KSU_EXPECTED_SIZE=${{ vars.EXPECTED_SIZE }}
             export KSU_EXPECTED_HASH=${{ vars.EXPECTED_HASH }}
           fi
           
-          # Skip mrproper which would delete our configs
+          # Skip mrproper to preserve the kernel configuration
           # make LLVM=1 LLVM_IAS=1 DEPMOD=depmod DTC=dtc O=${PWD} mrproper
           
-          # Use our prepared config
-          echo "Using prepared config file"
-          ls -la arch/x86/configs/
+          # Apply the defconfig
+          make LLVM=1 LLVM_IAS=1 DEPMOD=depmod DTC=dtc O=${PWD} ${DEFCONFIG} < /dev/null
+          
+          # Enable LTO options
+          scripts/config --file .config -e LTO_CLANG -d LTO_NONE -e LTO_CLANG_THIN -d LTO_CLANG_FULL -e THINLTO
           
           # Build the kernel
-          make LLVM=1 LLVM_IAS=1 DEPMOD=depmod DTC=dtc O=${PWD} oldconfig < /dev/null
-          scripts/config --file .config -e LTO_CLANG -d LTO_NONE -e LTO_CLANG_THIN -d LTO_CLANG_FULL -e THINLTO
-          make LLVM=1 LLVM_IAS=1 DEPMOD=depmod DTC=dtc O=${PWD} -j$(nproc) ${KERNEL_IMAGE_NAME} modules || make LLVM=1 LLVM_IAS=1 DEPMOD=depmod DTC=dtc O=${PWD} -j1 V=1 ${KERNEL_IMAGE_NAME}
+          make LLVM=1 LLVM_IAS=1 DEPMOD=depmod DTC=dtc O=${PWD} -j$(nproc) ${KERNEL_IMAGE_NAME} modules prepare-objtool
           
-          if [ -f ${PWD}/arch/${ARCH}/boot/${KERNEL_IMAGE_NAME} ]; then
-            echo "Kernel built successfully!"
-            ls -l -h ${PWD}/arch/${ARCH}/boot/${KERNEL_IMAGE_NAME}
-            echo "file_path=${PWD}/arch/${ARCH}/boot/${KERNEL_IMAGE_NAME}" >> $GITHUB_ENV
-          else
-            echo "Kernel build failed, checking for build errors..."
-            find ${PWD} -name "*.log" -exec cat {} \;
-            exit 1
-          fi
+          # List the built kernel image
+          ls -l -h ${PWD}/arch/${ARCH}/boot
+          
+          # Set the file path for artifact upload
+          echo "file_path=${PWD}/arch/${ARCH}/boot/${KERNEL_IMAGE_NAME}" >> $GITHUB_ENV
 
       - name: Upload kernel-ARCVM-${{ matrix.arch }}-${{ env.version }}
-        if: success()
         uses: actions/upload-artifact@v4
         with:
           name: kernel-ARCVM-${{ matrix.arch }}-${{ env.version }}
