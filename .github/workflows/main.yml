@@ -1,4 +1,4 @@
-name: Build Kernel - ChromeOS ARCVM
+name:   MAIN Build Kernel - ChromeOS ARCVM 
 on:
   push:
     branches: ["main", "ci", "checkci"]
@@ -38,6 +38,8 @@ jobs:
       LTO: thin
       ROOT_DIR: /
       KERNEL_DIR: ${{ github.workspace }}/kernel
+      BUILD_DIR: ${{ github.workspace }}
+      KSUVER: 10400  # Default value that will be updated later
 
     steps:
       - name: Install Build Tools
@@ -47,7 +49,7 @@ jobs:
               bison build-essential ca-certificates flex git gnupg \
               libelf-dev libssl-dev lsb-release software-properties-common wget \
               libncurses-dev binutils-aarch64-linux-gnu gcc-aarch64-linux-gnu nuget gzip \
-              rsync python3 device-tree-compiler ccache
+              rsync python3 device-tree-compiler ccache qrencode zip
           sudo ln -s --force python3 /usr/bin/python
           export LLVM_VERSION=14
           wget https://apt.llvm.org/llvm.sh
@@ -63,6 +65,7 @@ jobs:
           sudo ln -s --force /usr/bin/llvm-objcopy-$LLVM_VERSION /usr/bin/llvm-objcopy
           sudo ln -s --force /usr/bin/llvm-readelf-$LLVM_VERSION /usr/bin/llvm-readelf
           sudo ln -s --force /usr/bin/clang++-$LLVM_VERSION /usr/bin/clang++
+
       # Important: Check out both the main repo AND KernelSU in one step for proper linking
       - name: Checkout Repositories
         uses: actions/checkout@v4
@@ -87,6 +90,7 @@ jobs:
           ls -la
           echo "KernelSU contents:"
           ls -la KernelSU
+
       - name: Extract version from Makefile
         working-directory: kernel
         run: |
@@ -95,6 +99,7 @@ jobs:
           SUBLEVEL=$(grep -E '^SUBLEVEL = ' Makefile | awk '{print $3}')
           echo "ChromeOS ARCVM Linux kernel version: $VERSION.$PATCHLEVEL.$SUBLEVEL"
           echo "version=$VERSION.$PATCHLEVEL.$SUBLEVEL" >> $GITHUB_ENV
+
       - name: Setup KernelSU
         run: |
           echo "[+] KernelSU setup"
@@ -137,6 +142,8 @@ jobs:
           KSU_VERSION=$(($(git rev-list --count HEAD) + 10200))
           echo "KernelSU version: $KSU_VERSION"
           echo "kernelsu_version=$KSU_VERSION" >> $GITHUB_ENV
+          echo "KSUVER=$KSU_VERSION" >> $GITHUB_ENV
+
       - name: Verify KernelSU files
         run: |
           echo "Checking if KernelSU Kconfig exists:"
@@ -151,6 +158,7 @@ jobs:
           # Check if the file was included in Kconfig
           echo "Checking if kernelsu is included in drivers/Kconfig:"
           grep -n kernelsu $KERNEL_DIR/drivers/Kconfig
+
       - name: Apply SUSFS Patches
         run: |
           # Clone required repositories
@@ -175,6 +183,7 @@ jobs:
           fi
           
           git status --short
+
       - name: Add missing SUSFS header files
         run: |
           # Ensure kernel source include directory exists
@@ -206,6 +215,7 @@ jobs:
             sed -i '/linux\/susfs_def.h/i\#ifdef CONFIG_KSU_SUSFS' "$KERNEL_DIR/security/lsm_audit.c"
             sed -i '/linux\/susfs_def.h/a\#endif' "$KERNEL_DIR/security/lsm_audit.c"
           fi
+
       - name: Configure Kernel
         working-directory: kernel
         env:
@@ -219,14 +229,14 @@ jobs:
           if [ ! -f "drivers/kernelsu/Kconfig" ]; then
             echo "Creating minimal KernelSU Kconfig:"
             mkdir -p drivers/kernelsu
-            cat > drivers/kernelsu/Kconfig << 'EOF'
-          config KSU
-          tristate "Enable KernelSU support"
-          depends on !GENERIC_KERNEL_EXECVE
-          default n
-          help
-          Enable KernelSU for kernel-level root capabilities.
-          EOF
+            cat > drivers/kernelsu/Kconfig << EOF
+             config KSU
+             tristate "Enable KernelSU support"
+             depends on !GENERIC_KERNEL_EXECVE
+             default n
+             help
+             Enable KernelSU for kernel-level root capabilities.
+                 EOF
           fi
           
           # Then run the defconfig
@@ -273,6 +283,7 @@ jobs:
           # Ensure CONFIG_KSU_SUSFS is properly defined in autoconf.h for header checks
           mkdir -p include/generated
           echo "#define CONFIG_KSU_SUSFS 1" >> include/generated/autoconf.h
+
       - name: Build Kernel
         working-directory: kernel
         env:
@@ -309,49 +320,54 @@ jobs:
           
           # Set the file path for artifact upload
           echo "file_path=${PWD}/arch/${ARCH}/boot/${KERNEL_IMAGE_NAME}" >> $GITHUB_ENV
-      - name: Upload kernel-ARCVM-${{ matrix.arch }}-${{ env.version }}
-        uses: actions/upload-artifact@v4
-        with:
-          name: kernel-ARCVM-${{ matrix.arch }}-${{ env.version }}
-          path: "${{ env.file_path }}"
-
+          
       - name: Pack Source Tree
         run: |
-          # Create a symbolic link to the kernel directory with a more standard name
-          ln -sf $KERNEL_DIR $BUILD_DIR/kernel_source
+          # Create directory for outputs
+          mkdir -p $GITHUB_WORKSPACE/output
+          
+          # Copy kernel directly instead of using a symbolic link
+          echo "Copying kernel source for packaging..."
+          cp -r $KERNEL_DIR $GITHUB_WORKSPACE/output/kernel_source
           
           # Create the source tarball
-          cd $BUILD_DIR
+          cd $GITHUB_WORKSPACE/output
           tar -czf ARCVM-SUKISU-SOURCE.tar.gz kernel_source
           du -h ARCVM-SUKISU-SOURCE.tar.gz
           
           # Create the ZIP package with kernel and additional files
-          mkdir -p $BUILD_DIR/package
-          cp $KERNEL_DIR/arch/${{ matrix.arch }}/boot/${{ matrix.kernel_image_name }} $BUILD_DIR/package/
+          mkdir -p $GITHUB_WORKSPACE/output/package
+          cp $KERNEL_DIR/arch/${{ matrix.arch }}/boot/${{ matrix.kernel_image_name }} $GITHUB_WORKSPACE/output/package/
           
           # Create a simple README in the package
-          cat > $BUILD_DIR/package/README.txt << EOF
-           ARCVM SUKISU Kernel v${{ env.KSUVER }}
-           ChromeOS ARCVM ${{ env.version }} with KernelSU and SUSFS
-           Architecture: ${{ matrix.arch }}
+          cat > $GITHUB_WORKSPACE/output/package/README.txt << EOF
+          ARCVM SUKISU Kernel v${{ env.KSUVER }}
+          ChromeOS ARCVM ${{ env.version }} with KernelSU and SUSFS
+          Architecture: ${{ matrix.arch }}
 
-           This package contains the kernel image with KernelSU integration.
-              EOF
+          This package contains the kernel image with KernelSU integration.
+            EOF
           
-          cd $BUILD_DIR
+          cd $GITHUB_WORKSPACE/output
           zip -r ARCVM-SUKISU-ULTRA.zip package/
           ls -la ARCVM-SUKISU-ULTRA.zip
 
       - name: Upload & QR Code
         run: |
-          cd $BUILD_DIR
+          cd $GITHUB_WORKSPACE/output
+          sudo apt-get install -y curl qrencode
+          
+          # Upload files to transfer.sh
           upload() { curl --progress-bar -T "$1" https://transfer.sh/$(basename "$1"); echo; }
           ZIP_URL=$(upload ARCVM-SUKISU-ULTRA.zip)
           SRC_URL=$(upload ARCVM-SUKISU-SOURCE.tar.gz)
           BZ_URL=$(upload $KERNEL_DIR/arch/${{ matrix.arch }}/boot/${{ matrix.kernel_image_name }})
+          
           echo "ZIP_URL=$ZIP_URL" >> $GITHUB_ENV
           echo "SRC_URL=$SRC_URL" >> $GITHUB_ENV
           echo "BZ_URL=$BZ_URL" >> $GITHUB_ENV
+          
+          # Generate QR code
           qrencode -t ansiutf8 "$ZIP_URL"
 
       - name: Upload Artifacts
@@ -359,9 +375,9 @@ jobs:
         with:
           name: ARCVM-SUKISU-ULTRA-v${{ env.KSUVER }}
           path: |
-            ${{ env.BUILD_DIR }}/ARCVM-SUKISU-ULTRA.zip
-            ${{ env.BUILD_DIR }}/ARCVM-SUKISU-SOURCE.tar.gz
-            ${{ env.BUILD_DIR }}/kernel_source/arch/${{ matrix.arch }}/boot/${{ matrix.kernel_image_name }}
+            ${{ github.workspace }}/output/ARCVM-SUKISU-ULTRA.zip
+            ${{ github.workspace }}/output/ARCVM-SUKISU-SOURCE.tar.gz
+            ${{ github.workspace }}/output/kernel_source/arch/${{ matrix.arch }}/boot/${{ matrix.kernel_image_name }}
 
       - name: SUCCESS
         run: |
