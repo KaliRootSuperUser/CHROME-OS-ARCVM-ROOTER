@@ -319,19 +319,35 @@ jobs:
           echo "file_path=${PWD}/arch/${ARCH}/boot/${KERNEL_IMAGE_NAME}" >> $GITHUB_ENV
 
       - name: Pack Source Tree
-        id: pack_source
         run: |
-          KSUVER=${{ env.version }}
+          # Create directory for outputs
           mkdir -p $GITHUB_WORKSPACE/output
+          
+          # Copy kernel directly instead of using a symbolic link
+          echo "Copying kernel source for packaging..."
           cp -r $KERNEL_DIR $GITHUB_WORKSPACE/output/kernel_source
-          tar -czf $GITHUB_WORKSPACE/output/ARCVM-SUKISU-SOURCE.tar.gz -C $GITHUB_WORKSPACE/output kernel_source
+          
+          # Create the source tarball
+          cd $GITHUB_WORKSPACE/output
+          tar -czf ARCVM-SUKISU-SOURCE.tar.gz kernel_source
+          du -h ARCVM-SUKISU-SOURCE.tar.gz
+          
+          # Create the ZIP package with kernel and additional files
           mkdir -p $GITHUB_WORKSPACE/output/package
-          cp ${{ env.file_path }} $GITHUB_WORKSPACE/output/package/
-          echo "Kernel Version: ${KSUVER}" > $GITHUB_WORKSPACE/output/package/README.txt
-          echo "Target System: ChromeOS ARCVM" >> $GITHUB_WORKSPACE/output/package/README.txt
-          echo "Architecture: ${{ matrix.arch }}" >> $GITHUB_WORKSPACE/output/package/README.txt
-          cd $GITHUB_WORKSPACE/output/package
-          zip -r $GITHUB_WORKSPACE/output/ARCVM-SUKISU-ULTRA.zip .
+          cp $KERNEL_DIR/arch/${{ matrix.arch }}/boot/${{ matrix.kernel_image_name }} $GITHUB_WORKSPACE/output/package/
+          
+          # Create a simple README in the package
+          cat > $GITHUB_WORKSPACE/output/package/README.txt << EOF
+          ARCVM SUKISU Kernel v${{ env.KSUVER }}
+          ChromeOS ARCVM ${{ env.version }} with KernelSU and SUSFS
+          Architecture: ${{ matrix.arch }}
+          
+          This package contains the kernel image with KernelSU integration.
+          EOF
+          
+          cd $GITHUB_WORKSPACE/output
+          zip -r ARCVM-SUKISU-ULTRA.zip package/
+          ls -la ARCVM-SUKISU-ULTRA.zip
           echo "zip_path=$GITHUB_WORKSPACE/output/ARCVM-SUKISU-ULTRA.zip" >> $GITHUB_ENV
 
       - name: Upload kernel-ARCVM-${{ matrix.arch }}-${{ env.version }}
