@@ -10,14 +10,6 @@ on:
         type: boolean
         default: true
         description: "Hide root from banking apps?"
-      BUILD_MODE:
-        type: choice
-        default: "hybrid"
-        options:
-          - "gcc"
-          - "llvm"
-          - "hybrid"
-        description: "Compiler mode (gcc, llvm, or hybrid)"
 jobs:
   build:
     runs-on: ubuntu-latest
@@ -36,19 +28,13 @@ jobs:
           sudo apt install -y git curl wget build-essential bc bison flex \
             libelf-dev libssl-dev libncurses5-dev python3 cpio unzip jq \
             device-tree-compiler clang lld llvm zip qrencode ccache
-          # Make sure objtool has proper permissions
-          umask 022
           free -h && df -h
-
-      # Enhanced ccache setup with larger cache size and better key
+      # Setup ccache for incremental builds
       - name: 1.1. Setup ccache
         uses: hendrikmuhs/ccache-action@v1.2
         with:
-          key: ${{ runner.os }}-kernel-arcvm-${{ hashFiles('**/Makefile') }}-${{ github.run_id }}
-          restore-keys: |
-            ${{ runner.os }}-kernel-arcvm-${{ hashFiles('**/Makefile') }}-
-            ${{ runner.os }}-kernel-arcvm-
-          max-size: 5G  # Larger cache size for better incremental build
+          key: ${{ runner.os }}-kernel-arcvm-${{ hashFiles('**/Makefile') }}
+          max-size: 2G  # Allocate 2GB for ccache
 
       - name: 2. Create Build Directory
         run: |
@@ -57,13 +43,11 @@ jobs:
           cd "$BUILD_DIR"
           echo "BUILD_DIR=$BUILD_DIR" >> $GITHUB_ENV
           pwd
-
       - name: 3. Clone ChromeOS 5.10 ARCVM Kernel
         run: |
           cd "$BUILD_DIR"
           git clone --depth=1 https://chromium.googlesource.com/chromiumos/third_party/kernel.git -b chromeos-5.10-arcvm kernel_source
           cd kernel_source && git log -1 --oneline
-
       - name: 4. Inject SukiSU-Ultra
         run: |
           cd "$BUILD_DIR/kernel_source"
@@ -73,12 +57,10 @@ jobs:
           echo "KSUVER=$KSU_VERSION" >> $GITHUB_ENV
           sed -i "s/DKSU_VERSION=12800/DKSU_VERSION=$KSU_VERSION/" ../Makefile
           echo "SukiSU Ultra v$KSU_VERSION injected"
-
       - name: Disable Werror for KPM module
         run: |
           cd "$BUILD_DIR/kernel_source/drivers/kernelsu/kpm"
           echo "CFLAGS_kpm.o := -Wno-error" >> Makefile
-
       - name: 5. Apply All Patches
         run: |
           cd "$BUILD_DIR"
@@ -96,110 +78,48 @@ jobs:
             cp ../SukiSU_patch/other/zram/zram_patch/5.10/lz4kd.patch . && patch -p1 < lz4kd.patch || true
           fi
           git status --short
-
-      - name: 5.1. Create SUSFS directory structure
-        run: |
-          cd "$BUILD_DIR/kernel_source"
-          # Create necessary directories with proper permissions
-          mkdir -p include/linux
-          mkdir -p include/uapi/linux
-          mkdir -p fs/susfs
-          mkdir -p security
-          chmod -R 755 include fs security
-
-      - name: 5.2. Download and Install SUSFS headers
+      - name: 5.1. Add missing SUSFS header files
         run: |
           cd "$BUILD_DIR"
-          # Download essential header files
+          # First ensure kernel source include directory exists
+          mkdir -p "$BUILD_DIR/kernel_source/include/linux"
+          
+          # Directly download the headers from the repo
+          echo "Downloading SUSFS headers from GitLab..."
           wget -O "$BUILD_DIR/kernel_source/include/linux/susfs_def.h" "https://gitlab.com/simonpunk/susfs4ksu/-/raw/gki-android13-5.10/kernel_patches/include/linux/susfs_def.h"
           wget -O "$BUILD_DIR/kernel_source/include/linux/susfs.h" "https://gitlab.com/simonpunk/susfs4ksu/-/raw/gki-android13-5.10/kernel_patches/include/linux/susfs.h"
           wget -O "$BUILD_DIR/kernel_source/include/linux/sus_su.h" "https://gitlab.com/simonpunk/susfs4ksu/-/raw/gki-android13-5.10/kernel_patches/include/linux/sus_su.h"
           
-          # Copy from local repo if available
+          # Also copy from local clone as backup
           if [ -d "$BUILD_DIR/susfs/kernel_patches/include" ]; then
+            echo "Also copying SUSFS headers from local clone as backup..."
             cp -rv "$BUILD_DIR/susfs/kernel_patches/include/linux/"* "$BUILD_DIR/kernel_source/include/linux/"
           fi
           
-          # Fix file permissions for all headers to ensure they're readable
-          chmod 644 "$BUILD_DIR/kernel_source/include/linux/"*
+          # Verify files exist
+          echo "Verifying SUSFS header files..."
+          find "$BUILD_DIR/kernel_source/include/linux/" -name "susfs*" -o -name "sus_su*" -type f
           
-          # Verify the files exist
-          find "$BUILD_DIR/kernel_source/include" -name "susfs*" -o -name "sus_su*"
-
-      - name: 5.3. Fix Security Module Files
-        run: |
-          cd "$BUILD_DIR/kernel_source"
+          # Create necessary symlinks if any required
+          ln -sf "$BUILD_DIR/kernel_source/include/linux/susfs.h" "$BUILD_DIR/kernel_source/include/susfs.h" || true
+          ln -sf "$BUILD_DIR/kernel_source/include/linux/susfs_def.h" "$BUILD_DIR/kernel_source/include/susfs_def.h" || true
           
-          # Create include guards for SUSFS headers
-          for file in include/linux/susfs*.h include/linux/sus_su*.h; do
-            if [ -f "$file" ]; then
-              # Get the filename without path and extension
-              filename=$(basename "$file")
-              guard_name="LINUX_$(echo "$filename" | tr '[:lower:].' '[:upper:]_')_H"
-          
-              # Add include guards if they don't exist
-              if ! grep -q "#ifndef $guard_name" "$file"; then
-                temp_file="$file.tmp"
-                echo "#ifndef $guard_name" > "$temp_file"
-                echo "#define $guard_name" >> "$temp_file"
-                echo "" >> "$temp_file"
-                cat "$file" >> "$temp_file"
-                echo "" >> "$temp_file"
-                echo "#endif /* $guard_name */" >> "$temp_file"
-                mv "$temp_file" "$file"
-                chmod 644 "$file"
-                echo "Added include guards to $file"
-              fi
-            fi
-          done
-          
-          # Fix LSM audit file if exists
-          if [ -f "security/lsm_audit.c" ]; then
-            if grep -q "linux/susfs_def.h" "security/lsm_audit.c"; then
-              # Create backup
-              cp security/lsm_audit.c security/lsm_audit.c.bak
-          
-              # Fix the include with proper guards
-              sed -i '/linux\/susfs_def.h/i #ifdef CONFIG_KSU_SUSFS' security/lsm_audit.c
-              sed -i '/linux\/susfs_def.h/a #endif' security/lsm_audit.c
-              echo "Fixed security/lsm_audit.c"
-            fi
+          # Fix LSM audit if it includes susfs_def.h
+          if grep -q "linux/susfs_def.h" "$BUILD_DIR/kernel_source/security/lsm_audit.c" 2>/dev/null; then
+            echo "Fixing security/lsm_audit.c to conditionally include susfs_def.h..."
+            sed -i '/linux\/susfs_def.h/i\#ifdef CONFIG_KSU_SUSFS' "$BUILD_DIR/kernel_source/security/lsm_audit.c"
+            sed -i '/linux\/susfs_def.h/a\#endif' "$BUILD_DIR/kernel_source/security/lsm_audit.c"
           fi
-          
-          # Create SUSFS security stub file
-          cat > security/susfs_stubs.c << 'EOC'
-          /*
-           * SUSFS stubs for security module integration
-           */
-          #include <linux/security.h>
-
-          #ifdef CONFIG_KSU_SUSFS
-          /* Empty stub implementations if needed */
-          #endif
-          EOC
-          chmod 644 security/susfs_stubs.c
-          echo "obj-y += susfs_stubs.o" >> security/Makefile
-          
-          # Patch device_cgroup.c warnings
-          if [ -f "security/device_cgroup.c" ]; then
-            sed -i 's/DECLARE_LSM_RET_DEFAULT_int/DECLARE_LSM_RET_DEFAULT/' security/device_cgroup.c || true
-          fi
-
       - name: Fix kernel/sched/rt.c printk format
         run: |
           cd "$BUILD_DIR/kernel_source"
           sed -i 's/"(%ld)\n", rq_of_rt_rq(rt_rq)->cpu, rt_rq->rt_time);/"(%llu)\n", rq_of_rt_rq(rt_rq)->cpu, rt_rq->rt_time);/g' kernel/sched/rt.c
-
-      - name: 6. Configure Kernel for hybrid build
+      - name: 6. Configure Kernel
         run: |
           cd "$BUILD_DIR/kernel_source"
-          # Ensure clean start
-          make mrproper
-          
-          # Standard kernel config
           make ARCH=x86_64 x86_64_arcvm_defconfig
           
-          # Add kernel configs
+          # Create kernel config using echo commands to avoid heredoc
           echo "CONFIG_KSU=y" >> .config
           echo "CONFIG_KPM=y" >> .config
           echo "CONFIG_KSU_MANUAL_HOOK=y" >> .config
@@ -225,16 +145,10 @@ jobs:
           echo "CONFIG_ZRAM_DEF_COMP_LZ4KD=y" >> .config
           echo "CONFIG_ZRAM_WRITEBACK=y" >> .config
           
-          # Remove dirty tag
           sed -i 's/ -dirty//g' scripts/setlocalversion
+          grep KSU .config | head -5
           
-          # Configure for LLVM if needed
-          if [[ "${{ inputs.BUILD_MODE }}" == "llvm" || "${{ inputs.BUILD_MODE }}" == "hybrid" ]]; then
-            # Enable LTO configs
-            scripts/config --file .config -e LTO_CLANG -d LTO_NONE -e LTO_CLANG_THIN -d LTO_CLANG_FULL -e THINLTO
-          fi
-          
-          # Configure ccache
+          # Configure ccache for kernel build
           echo "CONFIG_CCACHE=y" >> .config
           echo "KBUILD_COMPILER_LAUNCHER := ccache" >> Makefile
           
@@ -242,135 +156,106 @@ jobs:
           echo "# Fix missing symbols or version mismatches" >> Makefile
           echo 'KBUILD_CFLAGS += -Wno-error=implicit-function-declaration -Wno-error=incompatible-pointer-types -Wno-error=format -Wno-error' >> Makefile
           
-          # Disable kernel-doc warnings that cause build failures
-          echo 'KBUILD_CFLAGS += -DKBUILD_EXTRA_WARN1=0' >> Makefile
-          
-          # Ensure CONFIG_KSU_SUSFS is defined
+          # Ensure CONFIG_KSU_SUSFS is properly defined in autoconf.h for header checks
           mkdir -p include/generated
-          touch include/generated/autoconf.h
           echo "#define CONFIG_KSU_SUSFS 1" >> include/generated/autoconf.h
-
-      - name: 7. Build bzImage with hybrid GCC/LLVM approach
-        timeout-minutes: 60
+      - name: 7. Create stub file for security module
         run: |
           cd "$BUILD_DIR/kernel_source"
-          
-          # Set up ccache environment with correct boolean values
-          export PATH="/usr/lib/ccache:$PATH"
-          export CCACHE_COMPRESS=true
-          export CCACHE_COMPRESSLEVEL=6
-          export CCACHE_MAXFILES=0
-          export CCACHE_HARDLINK=true
-          export CCACHE_SLOPPINESS=file_macro,time_macros,include_file_mtime,include_file_ctime
-          export CCACHE_DIRECT=true
-          export CCACHE_COMPILERCHECK=content
-          
-          # Ensure proper permissions
-          umask 022
-          chmod -R go+r .
-          
-          # Display ccache stats before build
-          echo "=== CCACHE STATISTICS BEFORE BUILD ==="
-          ccache -s
-          
-          # Define hybrid build function
-          function build_kernel_hybrid() {
-            local jobs=$1
-            local clean=$2
-            
-            if [ "$clean" = "true" ]; then
-              echo "Cleaning build..."
-              make mrproper
-              make ARCH=x86_64 x86_64_arcvm_defconfig
-              
-              # Reapply configs
-              echo "CONFIG_KSU=y" >> .config
-              echo "CONFIG_KPM=y" >> .config
-              echo "CONFIG_KSU_SUSFS=y" >> .config
-              
-              # Enable LTO for hybrid/LLVM builds
-              if [[ "${{ inputs.BUILD_MODE }}" == "llvm" || "${{ inputs.BUILD_MODE }}" == "hybrid" ]]; then
-                scripts/config --file .config -e LTO_CLANG -d LTO_NONE -e LTO_CLANG_THIN -d LTO_CLANG_FULL -e THINLTO
-              fi
-            fi
-            
-            echo "Starting hybrid build process with $jobs jobs..."
-            SECONDS=0
-            
-            # Phase 1: Build core kernel with selected compiler
-            if [[ "${{ inputs.BUILD_MODE }}" == "gcc" ]]; then
-              echo "Building kernel core with GCC..."
-              make ARCH=x86_64 CC="ccache gcc" WERROR=0 KCFLAGS="-w" -j$jobs init/ arch/ drivers/
-              
-            elif [[ "${{ inputs.BUILD_MODE }}" == "llvm" ]]; then
-              echo "Building kernel core with LLVM/Clang..."
-              make ARCH=x86_64 LLVM=1 LLVM_IAS=1 CC="ccache clang" HOSTCC="ccache gcc" O=${PWD} -j$jobs init/ arch/ drivers/
-              
-            else # hybrid mode
-              echo "Building kernel core with LLVM/Clang for optimization..."
-              make ARCH=x86_64 LLVM=1 LLVM_IAS=1 CC="ccache clang" HOSTCC="ccache gcc" O=${PWD} -j$jobs init/ arch/ drivers/ || \
-              make ARCH=x86_64 CC="ccache gcc" WERROR=0 KCFLAGS="-w" -j$jobs init/ arch/ drivers/
-            fi
-            
-            # Phase 2: Build filesystem modules with GCC (typically more compatible)
-            echo "Building filesystem modules with GCC for compatibility..."
-            make ARCH=x86_64 CC="ccache gcc" WERROR=0 KCFLAGS="-w" -j$jobs fs/ || true
-            
-            # Phase 3: Build security modules with GCC (typically more compatible)
-            echo "Building security modules with GCC for compatibility..."
-            make ARCH=x86_64 CC="ccache gcc" WERROR=0 KCFLAGS="-w" -j$jobs security/ || true
-            
-            # Phase 4: Final build to complete everything
-            echo "Completing build with selected compiler..."
-            if [[ "${{ inputs.BUILD_MODE }}" == "gcc" || "${{ inputs.BUILD_MODE }}" == "hybrid" ]]; then
-              make ARCH=x86_64 CC="ccache gcc" WERROR=0 KCFLAGS="-w" -j$jobs bzImage
-            else
-              make ARCH=x86_64 LLVM=1 LLVM_IAS=1 CC="ccache clang" HOSTCC="ccache gcc" O=${PWD} -j$jobs bzImage
-            fi
-            
-            local result=$?
-            local duration=$SECONDS
-            echo "Build attempt completed in $(($duration / 60)) minutes and $(($duration % 60)) seconds"
-            return $result
+          # Create stub file to fix any missing susfs security functions
+          mkdir -p security
+          cat > security/susfs_stubs.c << 'EOC'
+          #include <linux/security.h>
+          #include <linux/lsm_hooks.h>
+
+          #ifdef CONFIG_KSU_SUSFS
+          /* Stub implementations for any missing SUSFS functions */
+
+          /* Basic security hooks for SUSFS that might be needed */
+          int susfs_security_init(void)
+          {
+              /* Empty stub implementation */
+              return 0;
           }
+
+          /* Add some potential LSM hook stubs */
+          int susfs_inode_permission(struct inode *inode, int mask)
+          {
+              /* Allow all operations by default */
+              return 0;
+          }
+
+          int susfs_file_permission(struct file *file, int mask)
+          {
+              /* Allow all operations by default */
+              return 0;
+          }
+
+          int susfs_path_mount(const char *dev_name, const struct path *path,
+                              const char *type, unsigned long flags, void *data)
+          {
+              /* Allow all operations by default */
+              return 0;
+          }
+
+          /* Export symbols so they can be used elsewhere */
+          EXPORT_SYMBOL(susfs_security_init);
+          EXPORT_SYMBOL(susfs_inode_permission);
+          EXPORT_SYMBOL(susfs_file_permission);
+          EXPORT_SYMBOL(susfs_path_mount);
+          #endif /* CONFIG_KSU_SUSFS */
+          EOC
+          # Add it to the Makefile
+          echo "obj-y += susfs_stubs.o" >> security/Makefile
+      - name: 8. Build bzImage
+        timeout-minutes: 45
+        run: |
+          cd "$BUILD_DIR/kernel_source"
+          # Set up ccache in path
+          export PATH="/usr/lib/ccache:$PATH"
+          # Make sure clean build happens if any previous errors
+          make clean
           
-          # First build attempt
-          echo "Starting first build attempt..."
-          build_kernel_hybrid $(nproc) false
+          # Debug: Check if susfs header files exist
+          echo "Checking SUSFS header files before build:"
+          find include -name "susfs*" -o -name "sus_su*" -type f
           
-          # Check if build succeeded
-          if [ ! -f arch/x86/boot/bzImage ]; then
-            echo "First build attempt failed. Trying clean build with half cores..."
-            build_kernel_hybrid $(($(nproc) / 2)) true
-            
-            # If still failing, try minimal build with GCC
-            if [ ! -f arch/x86/boot/bzImage ]; then
-              echo "Second build attempt failed. Falling back to minimal GCC build..."
-              make mrproper
-              make ARCH=x86_64 x86_64_arcvm_defconfig
-              echo 'KBUILD_CFLAGS += -w -Wno-error' >> Makefile
-              make ARCH=x86_64 CC="ccache gcc" WERROR=0 KCFLAGS="-w" -j2 bzImage
+          # Build with ccache and error handling - first try with normal settings
+          set +e
+          make ARCH=x86_64 CC="ccache gcc" -j$(nproc) bzImage
+          BUILD_RESULT=$?
+          set -e
+          
+          # If build failed, try again with verbose output and fewer jobs
+          if [ $BUILD_RESULT -ne 0 ]; then
+            echo "First build attempt failed, trying with verbose output and fewer jobs..."
+            make clean
+            make ARCH=x86_64 CC="ccache gcc" V=1 W=1 -j$(($(nproc) / 2)) bzImage
+            BUILD_RESULT=$?
+          
+            # If it still fails, try with absolute minimum settings
+            if [ $BUILD_RESULT -ne 0 ]; then
+              echo "Second build attempt failed, trying with minimal jobs..."
+              make clean
+              make ARCH=x86_64 CC="ccache gcc" -j2 security/built-in.a || true
+              make ARCH=x86_64 CC="ccache gcc" KCFLAGS="-Wno-error" -j2 bzImage
             fi
           fi
           
-          # Verify final build
+          # Check if bzImage was created despite any warnings
           if [ -f arch/x86/boot/bzImage ]; then
             ls -lh arch/x86/boot/bzImage
             file arch/x86/boot/bzImage
             echo "Build completed successfully, bzImage created."
-            # Save cache markers
-            date > .last_build_time
-            git rev-parse HEAD > .last_commit_hash
           else
             echo "Failed to build bzImage after multiple attempts."
             exit 1
           fi
           
           # Display ccache statistics
-          echo "=== CCACHE STATISTICS AFTER BUILD ==="
+          echo "=== CCACHE STATISTICS ==="
           ccache -s
-
-      - name: 8. Download SUSFS Module (CI)
+      - name: 9. Download SUSFS Module (CI)
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
@@ -379,8 +264,7 @@ jobs:
           ARTIFACT_URL=$(curl -s -H "Authorization: Bearer $GITHUB_TOKEN" "https://api.github.com/repos/sidex15/susfs4ksu-module/actions/runs/$LATEST_ID/artifacts" | jq -r '.artifacts[0].archive_download_url')
           curl -L -H "Authorization: Bearer $GITHUB_TOKEN" -o susfs.zip "$ARTIFACT_URL"
           unzip -l susfs.zip | head -3
-
-      - name: 9. Pack Flashable ZIP
+      - name: 10. Pack Flashable ZIP
         run: |
           cd "$BUILD_DIR"
           git clone --depth=1 https://github.com/Numbersf/AnyKernel3
@@ -394,14 +278,12 @@ jobs:
             echo "bzImage not found. Build failed. Cannot create flashable ZIP."
             exit 1
           fi
-
-      - name: 10. Pack Source Tree
+      - name: 11. Pack Source Tree
         run: |
           cd "$BUILD_DIR"
           tar -czf ARCVM-SUKISU-SOURCE.tar.gz kernel_source
           du -h ARCVM-SUKISU-SOURCE.tar.gz
-
-      - name: 11. Upload & QR Code
+      - name: 12. Upload & QR Code
         run: |
           cd "$BUILD_DIR"
           upload() { curl --progress-bar -T "$1" https://transfer.sh/$(basename "$1"); echo; }
@@ -412,28 +294,14 @@ jobs:
           echo "SRC_URL=$SRC_URL" >> $GITHUB_ENV
           echo "BZ_URL=$BZ_URL" >> $GITHUB_ENV
           qrencode -t ansiutf8 "$ZIP_URL"
-
-      - name: 12. Upload Artifacts
+      - name: 13. Upload Artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: ARCVM-SUKISU-ULTRA-v${{ env.KSUVER }}-${{ inputs.BUILD_MODE }}
+          name: ARCVM-SUKISU-ULTRA-v${{ env.KSUVER }}
           path: |
             ${{ env.BUILD_DIR }}/ARCVM-SUKISU-ULTRA.zip
             ${{ env.BUILD_DIR }}/ARCVM-SUKISU-SOURCE.tar.gz
             ${{ env.BUILD_DIR }}/kernel_source/arch/x86/boot/bzImage
-
-      - name: 13. Cache build output for future builds
-        uses: actions/cache@v3
-        with:
-          path: |
-            ${{ env.BUILD_DIR }}/kernel_source/arch
-            ${{ env.BUILD_DIR }}/kernel_source/scripts
-            ${{ env.BUILD_DIR }}/kernel_source/.config
-            ${{ env.BUILD_DIR }}/kernel_source/.last_build_time
-          key: kernel-build-output-${{ github.run_id }}-${{ inputs.BUILD_MODE }}
-          restore-keys: |
-            kernel-build-output-
-
       - name: 14. SUCCESS
         run: |
           echo "ARCVM ROOT READY"
