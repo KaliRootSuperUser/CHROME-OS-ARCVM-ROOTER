@@ -154,7 +154,7 @@ jobs:
           
           # Apply additional fixes for common build errors
           echo "# Fix missing symbols or version mismatches" >> Makefile
-          echo 'KBUILD_CFLAGS += -Wno-error=implicit-function-declaration -Wno-error=incompatible-pointer-types -Wno-error=format -Wno-error' >> Makefile
+          echo 'KBUILD_CFLAGS += -Wno-error=implicit-function-declaration -Wno-error=incompatible-pointer-types -Wno-error=format -Wno-error -Wno-missing-prototypes -Wno-unused-const-variable' >> Makefile
           
           # Ensure CONFIG_KSU_SUSFS is properly defined in autoconf.h for header checks
           mkdir -p include/generated
@@ -173,16 +173,18 @@ jobs:
           #include <linux/security.h>
           #include <linux/lsm_hooks.h>
           #include <linux/module.h>
-
+          #include <linux/fs.h>
+          #include <linux/path.h>
+          
           #ifdef CONFIG_KSU_SUSFS
-
+          
           /* Function prototypes - declare these before implementation */
           int susfs_security_init(void);
           int susfs_inode_permission(struct inode *inode, int mask);
           int susfs_file_permission(struct file *file, int mask);
           int susfs_path_mount(const char *dev_name, const struct path *path,
                               const char *type, unsigned long flags, void *data);
-
+          
           /* Basic security hooks for SUSFS that might be needed */
           int susfs_security_init(void)
           {
@@ -190,33 +192,33 @@ jobs:
               pr_info("SUSFS: security init stub called\n");
               return 0;
           }
-
+          
           /* Add some potential LSM hook stubs */
           int susfs_inode_permission(struct inode *inode, int mask)
           {
               /* Allow all operations by default */
               return 0;
           }
-
+          
           int susfs_file_permission(struct file *file, int mask)
           {
               /* Allow all operations by default */
               return 0;
           }
-
+          
           int susfs_path_mount(const char *dev_name, const struct path *path,
                               const char *type, unsigned long flags, void *data)
           {
               /* Allow all operations by default */
               return 0;
           }
-
+          
           /* Export symbols so they can be used elsewhere */
           EXPORT_SYMBOL_GPL(susfs_security_init);
           EXPORT_SYMBOL_GPL(susfs_inode_permission);
           EXPORT_SYMBOL_GPL(susfs_file_permission);
           EXPORT_SYMBOL_GPL(susfs_path_mount);
-
+          
           #endif /* CONFIG_KSU_SUSFS */
           EOC
           # Add it to the Makefile
@@ -236,7 +238,7 @@ jobs:
           
           # Build with ccache and error handling - first try with normal settings
           set +e
-          make ARCH=x86_64 CC="ccache gcc" -j$(nproc) bzImage
+          make ARCH=x86_64 CC="ccache gcc" KCFLAGS="-Wno-missing-prototypes -Wno-unused-const-variable" -j$(nproc) bzImage
           BUILD_RESULT=$?
           set -e
           
@@ -244,18 +246,18 @@ jobs:
           if [ $BUILD_RESULT -ne 0 ]; then
             echo "First build attempt failed, trying with verbose output and fewer jobs..."
             make clean
-            make ARCH=x86_64 CC="ccache gcc" V=1 W=1 -j$(($(nproc) / 2)) bzImage
+            make ARCH=x86_64 CC="ccache gcc" V=1 W=1 KCFLAGS="-Wno-missing-prototypes -Wno-unused-const-variable" -j$(($(nproc) / 2)) bzImage
             BUILD_RESULT=$?
           
             # If it still fails, try with absolute minimum settings
             if [ $BUILD_RESULT -ne 0 ]; then
               echo "Second build attempt failed, trying with minimal jobs..."
               make clean
+              # Try to build just the security module first
               make ARCH=x86_64 CC="ccache gcc" -j2 security/built-in.a || true
-              # For the build step, add these flags to suppress warnings
-            make ARCH=x86_64 CC="ccache gcc" KCFLAGS="-Wno-missing-prototypes -Wno-unused-const-variable" -j$(nproc) bzImage
-  
-          fi
+              # Then build the full kernel with all warning suppressions
+              make ARCH=x86_64 CC="ccache gcc" KCFLAGS="-Wno-missing-prototypes -Wno-unused-const-variable -Wno-error" -j2 bzImage
+            fi
           fi
           
           # Check if bzImage was created despite any warnings
@@ -268,9 +270,9 @@ jobs:
             exit 1
           fi
           
-        # Display ccache statistics
-       echo "=== CCACHE STATISTICS ==="
-       ccache -s
+          # Display ccache statistics
+          echo "=== CCACHE STATISTICS ==="
+          ccache -s
       - name: 9. Download SUSFS Module (CI)
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
