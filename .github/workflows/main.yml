@@ -335,21 +335,6 @@ jobs:
                echo "✅ Kernel config orchestration complete."
                echo "🔍 Preview of all KernelSU/Sukisu settings:"
          grep -E "KSU|SUSFS|SUKISU|KPM" .config || echo "⚠️ No KernelSU-related entries found!"
-      - name: Pack Source Tree
-        id: pack_source
-        run: |
-          KSUVER=${{ env.version }}
-          mkdir -p $GITHUB_WORKSPACE/output
-          cp -r $KERNEL_DIR $GITHUB_WORKSPACE/output/kernel_source
-          tar -czf $GITHUB_WORKSPACE/output/ARCVM-SUKISU-SOURCE.tar.gz -C $GITHUB_WORKSPACE/output kernel_source
-          mkdir -p $GITHUB_WORKSPACE/output/package
-          cp ${{ env.file_path }} $GITHUB_WORKSPACE/output/package/
-          echo "Kernel Version: ${KSUVER}" > $GITHUB_WORKSPACE/output/package/README.txt
-          echo "Target System: ChromeOS ARCVM" >> $GITHUB_WORKSPACE/output/package/README.txt
-          echo "Architecture: ${{ matrix.arch }}" >> $GITHUB_WORKSPACE/output/package/README.txt
-          cd $GITHUB_WORKSPACE/output/package
-          zip -r $GITHUB_WORKSPACE/output/ARCVM-SUKISU-ULTRA.zip .
-          echo "zip_path=$GITHUB_WORKSPACE/output/ARCVM-SUKISU-ULTRA.zip" >> $GITHUB_ENV    
       - name: Build Kernel
         working-directory: kernel
         env:
@@ -386,6 +371,37 @@ jobs:
           
           # Set the file path for artifact upload
           echo "file_path=${PWD}/arch/${ARCH}/boot/${KERNEL_IMAGE_NAME}" >> $GITHUB_ENV
+      - name: Pack Source Tree
+        id: pack_source
+        run: |
+          # Create output directories
+          KSUVER=${{ env.version }}
+          mkdir -p $GITHUB_WORKSPACE/output
+          mkdir -p $GITHUB_WORKSPACE/output/package
+
+          # Copy kernel source and create source archive
+          cp -r $KERNEL_DIR $GITHUB_WORKSPACE/output/kernel_source
+          tar -czf $GITHUB_WORKSPACE/output/ARCVM-SUKISU-SOURCE.tar.gz -C $GITHUB_WORKSPACE/output kernel_source
+
+          # Create README file with kernel information
+          echo "Kernel Version: ${KSUVER}" > $GITHUB_WORKSPACE/output/package/README.txt
+          echo "Target System: ChromeOS ARCVM" >> $GITHUB_WORKSPACE/output/package/README.txt
+          echo "Architecture: ${{ matrix.arch }}" >> $GITHUB_WORKSPACE/output/package/README.txt
+
+          # Conditionally copy kernel image file if it exists
+          if [ ! -z "${{ env.file_path }}" ] && [ -f "${{ env.file_path }}" ]; then
+            echo "Copying kernel image from ${{ env.file_path }}"
+            cp "${{ env.file_path }}" $GITHUB_WORKSPACE/output/package/
+          else
+            echo "Warning: Kernel image file not available yet. Will be added in the Build Kernel step."
+            # Create a placeholder file so the zip step doesn't fail if there's no kernel image
+            echo "Kernel image will be built in next step" > $GITHUB_WORKSPACE/output/package/kernel_image_placeholder.txt
+          fi
+
+          # Create the ZIP file with available contents
+          cd $GITHUB_WORKSPACE/output/package
+          zip -r $GITHUB_WORKSPACE/output/ARCVM-SUKISU-ULTRA.zip .
+          echo "zip_path=$GITHUB_WORKSPACE/output/ARCVM-SUKISU-ULTRA.zip" >> $GITHUB_ENV
       - name: Upload kernel-ARCVM-${{ matrix.arch }}-${{ env.version }}
         uses: actions/upload-artifact@v4
         with:
