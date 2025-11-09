@@ -206,6 +206,35 @@ jobs:
             sed -i '/linux\/susfs_def.h/i\#ifdef CONFIG_KSU_SUSFS' "$KERNEL_DIR/security/lsm_audit.c"
             sed -i '/linux\/susfs_def.h/a\#endif' "$KERNEL_DIR/security/lsm_audit.c"
           fi
+      - name: Fix KernelSU Kprobes Dependencies
+        working-directory: kernel
+        run: |
+          # Make sure the necessary kprobes header is included in supercalls.c
+          if grep -q "struct kprobe" "drivers/kernelsu/supercalls.c"; then
+            echo "Adding kprobes.h include to supercalls.c"
+            sed -i '1i\#include <linux/kprobes.h>' drivers/kernelsu/supercalls.c
+          fi
+
+          # Make sure CONFIG_KPROBES is explicitly enabled in the .config file
+          echo "CONFIG_KPROBES=y" >> .config
+          echo "CONFIG_HAVE_KPROBES=y" >> .config
+          echo "CONFIG_KPROBE_EVENTS=y" >> .config
+
+          # Ensure the kprobes module is built into the kernel
+          echo "obj-y += kprobes/" >> kernel/Makefile
+
+          # Debug output to verify
+          echo "Checking if kprobes.h is now included in supercalls.c:"
+          grep -n "#include <linux/kprobes.h>" drivers/kernelsu/supercalls.c || echo "Include not added!"
+
+          # Create a symlink to ensure kprobes.h is found during compilation
+          mkdir -p include/linux
+          if [ ! -f "include/linux/kprobes.h" ] && [ -f "kernel/kprobes.h" ]; then
+            ln -sf ../../kernel/kprobes.h include/linux/kprobes.h
+          fi
+
+          # Force regeneration of compile includes
+          touch include/generated/autoconf.h      
       - name: Configure Kernel
         working-directory: kernel
         env:
