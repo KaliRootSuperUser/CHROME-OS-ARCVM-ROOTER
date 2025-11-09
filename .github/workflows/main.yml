@@ -63,7 +63,6 @@ jobs:
           sudo ln -s --force /usr/bin/llvm-objcopy-$LLVM_VERSION /usr/bin/llvm-objcopy
           sudo ln -s --force /usr/bin/llvm-readelf-$LLVM_VERSION /usr/bin/llvm-readelf
           sudo ln -s --force /usr/bin/clang++-$LLVM_VERSION /usr/bin/clang++
-
       # Important: Check out both the main repo AND KernelSU in one step for proper linking
       - name: Checkout Repositories
         uses: actions/checkout@v4
@@ -88,7 +87,6 @@ jobs:
           ls -la
           echo "KernelSU contents:"
           ls -la KernelSU
-
       - name: Extract version from Makefile
         working-directory: kernel
         run: |
@@ -97,7 +95,6 @@ jobs:
           SUBLEVEL=$(grep -E '^SUBLEVEL = ' Makefile | awk '{print $3}')
           echo "ChromeOS ARCVM Linux kernel version: $VERSION.$PATCHLEVEL.$SUBLEVEL"
           echo "version=$VERSION.$PATCHLEVEL.$SUBLEVEL" >> $GITHUB_ENV
-
       - name: Setup KernelSU
         run: |
           echo "[+] KernelSU setup"
@@ -140,7 +137,6 @@ jobs:
           KSU_VERSION=$(($(git rev-list --count HEAD) + 10200))
           echo "KernelSU version: $KSU_VERSION"
           echo "kernelsu_version=$KSU_VERSION" >> $GITHUB_ENV
-
       - name: Verify KernelSU files
         run: |
           echo "Checking if KernelSU Kconfig exists:"
@@ -155,7 +151,6 @@ jobs:
           # Check if the file was included in Kconfig
           echo "Checking if kernelsu is included in drivers/Kconfig:"
           grep -n kernelsu $KERNEL_DIR/drivers/Kconfig
-
       - name: Apply SUSFS Patches
         run: |
           # Clone required repositories
@@ -180,7 +175,6 @@ jobs:
           fi
           
           git status --short
-
       - name: Add missing SUSFS header files
         run: |
           # Ensure kernel source include directory exists
@@ -212,7 +206,6 @@ jobs:
             sed -i '/linux\/susfs_def.h/i\#ifdef CONFIG_KSU_SUSFS' "$KERNEL_DIR/security/lsm_audit.c"
             sed -i '/linux\/susfs_def.h/a\#endif' "$KERNEL_DIR/security/lsm_audit.c"
           fi
-
       - name: Configure Kernel
         working-directory: kernel
         env:
@@ -280,7 +273,83 @@ jobs:
           # Ensure CONFIG_KSU_SUSFS is properly defined in autoconf.h for header checks
           mkdir -p include/generated
           echo "#define CONFIG_KSU_SUSFS 1" >> include/generated/autoconf.h
+      - name: Ensure KernelSU + Sukisu + SUSFS Configs
+        run: |
+         echo "🔧 Orchestrating Kernel config flags..."
 
+               CONFIG_FLAGS=(
+                 CONFIG_KSU
+                 CONFIG_KSU_FS
+                 CONFIG_KSU_ALLOWLIST
+                 CONFIG_KSU_SUKISU
+                 CONFIG_KSU_DEBUG
+                 CONFIG_KPROBES
+                 CONFIG_KPM
+                 CONFIG_KSU_SUPERCALLS
+                 CONFIG_KSU_ENFORCE
+                 CONFIG_KSU_PERMISSIVE
+                 CONFIG_KSU_CORE_INIT
+                 CONFIG_KSU_KSUD_INIT
+                 CONFIG_KSU_ALLOWLIST_INIT
+                 CONFIG_KSU_GET_ROOT_PROFILE
+                 CONFIG_KSU_MANUAL_HOOK
+                 CONFIG_KSU_SUSFS
+                 CONFIG_KSU_SUSFS_HAS_MAGIC_MOUNT
+                 CONFIG_KSU_SUSFS_SUS_PATH
+                 CONFIG_KSU_SUSFS_SUS_MOUNT
+                 CONFIG_KSU_SUSFS_AUTO_ADD_SUS_KSU_DEFAULT_MOUNT
+                 CONFIG_KSU_SUSFS_AUTO_ADD_SUS_BIND_MOUNT
+                 CONFIG_KSU_SUSFS_SUS_KSTAT
+                 CONFIG_KSU_SUSFS_TRY_UMOUNT
+                 CONFIG_KSU_SUSFS_SPOOF_UNAME
+                 CONFIG_KSU_SUSFS_ENABLE_LOG
+                 CONFIG_KSU_SUSFS_HIDE_KSU_SUSFS_SYMBOLS
+                 CONFIG_KSU_SUSFS_SPOOF_CMDLINE_OR_BOOTCONFIG
+                 CONFIG_KSU_SUSFS_OPEN_REDIRECT
+                 CONFIG_ZSMALLOC
+                 CONFIG_ZRAM
+                 CONFIG_CRYPTO_LZ4HC
+                 CONFIG_CRYPTO_LZ4K
+                 CONFIG_CRYPTO_LZ4KD
+                 CONFIG_CRYPTO_842
+                 CONFIG_ZRAM_DEF_COMP_LZ4KD
+                 CONFIG_ZRAM_WRITEBACK
+               )
+
+               # ensure .config exists
+               touch .config
+
+               for FLAG in "${CONFIG_FLAGS[@]}"; do
+                 # Check if config exists
+                 if grep -q "^${FLAG}=y" .config; then
+                   echo "✅ ${FLAG} already enabled"
+                 elif grep -q "^${FLAG}=n" .config; then
+                   echo "⚙️ ${FLAG} found but disabled → enabling"
+                   sed -i "s/^${FLAG}=n/${FLAG}=y/" .config
+                 else
+                   echo "➕ Adding ${FLAG}=y"
+                   echo "${FLAG}=y" >> .config
+                 fi
+               done
+               echo ""
+               echo "✅ Kernel config orchestration complete."
+               echo "🔍 Preview of all KernelSU/Sukisu settings:"
+         grep -E "KSU|SUSFS|SUKISU|KPM" .config || echo "⚠️ No KernelSU-related entries found!"
+      - name: Pack Source Tree
+        id: pack_source
+        run: |
+          KSUVER=${{ env.version }}
+          mkdir -p $GITHUB_WORKSPACE/output
+          cp -r $KERNEL_DIR $GITHUB_WORKSPACE/output/kernel_source
+          tar -czf $GITHUB_WORKSPACE/output/ARCVM-SUKISU-SOURCE.tar.gz -C $GITHUB_WORKSPACE/output kernel_source
+          mkdir -p $GITHUB_WORKSPACE/output/package
+          cp ${{ env.file_path }} $GITHUB_WORKSPACE/output/package/
+          echo "Kernel Version: ${KSUVER}" > $GITHUB_WORKSPACE/output/package/README.txt
+          echo "Target System: ChromeOS ARCVM" >> $GITHUB_WORKSPACE/output/package/README.txt
+          echo "Architecture: ${{ matrix.arch }}" >> $GITHUB_WORKSPACE/output/package/README.txt
+          cd $GITHUB_WORKSPACE/output/package
+          zip -r $GITHUB_WORKSPACE/output/ARCVM-SUKISU-ULTRA.zip .
+          echo "zip_path=$GITHUB_WORKSPACE/output/ARCVM-SUKISU-ULTRA.zip" >> $GITHUB_ENV    
       - name: Build Kernel
         working-directory: kernel
         env:
@@ -317,39 +386,6 @@ jobs:
           
           # Set the file path for artifact upload
           echo "file_path=${PWD}/arch/${ARCH}/boot/${KERNEL_IMAGE_NAME}" >> $GITHUB_ENV
-
-      - name: Pack Source Tree
-        run: |
-          # Create directory for outputs
-          mkdir -p $GITHUB_WORKSPACE/output
-          
-          # Copy kernel directly instead of using a symbolic link
-          echo "Copying kernel source for packaging..."
-          cp -r $KERNEL_DIR $GITHUB_WORKSPACE/output/kernel_source
-          
-          # Create the source tarball
-          cd $GITHUB_WORKSPACE/output
-          tar -czf ARCVM-SUKISU-SOURCE.tar.gz kernel_source
-          du -h ARCVM-SUKISU-SOURCE.tar.gz
-          
-          # Create the ZIP package with kernel and additional files
-          mkdir -p $GITHUB_WORKSPACE/output/package
-          cp $KERNEL_DIR/arch/${{ matrix.arch }}/boot/${{ matrix.kernel_image_name }} $GITHUB_WORKSPACE/output/package/
-          
-          # Create a simple README in the package
-          cat > $GITHUB_WORKSPACE/output/package/README.txt << EOF
-          ARCVM SUKISU Kernel v${{ env.KSUVER }}
-          ChromeOS ARCVM ${{ env.version }} with KernelSU and SUSFS
-          Architecture: ${{ matrix.arch }}
-          
-          This package contains the kernel image with KernelSU integration.
-          EOF
-          
-          cd $GITHUB_WORKSPACE/output
-          zip -r ARCVM-SUKISU-ULTRA.zip package/
-          ls -la ARCVM-SUKISU-ULTRA.zip
-          echo "zip_path=$GITHUB_WORKSPACE/output/ARCVM-SUKISU-ULTRA.zip" >> $GITHUB_ENV
-
       - name: Upload kernel-ARCVM-${{ matrix.arch }}-${{ env.version }}
         uses: actions/upload-artifact@v4
         with:
