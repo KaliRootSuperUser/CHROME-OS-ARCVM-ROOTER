@@ -14,10 +14,10 @@ jobs:
             kernel_image_name: bzImage
             build_config: build.config.gki.x86_64
             defconfig: x86_64_arcvm_defconfig
-          - arch: arm64
-            kernel_image_name: Image
-            build_config: build.config.gki.aarch64
-            defconfig: arm64_arcvm_defconfig
+          #- arch: arm64
+           # kernel_image_name: Image
+            #build_config: build.config.gki.aarch64
+           # defconfig: arm64_arcvm_defconfig
 
     name: Build ChromeOS ARCVM 5.10.239 (SukiSU Ultra)
     runs-on: ubuntu-22.04
@@ -56,10 +56,14 @@ jobs:
           cd $GITHUB_WORKSPACE
           git clone https://github.com/SukiSU-Ultra/SukiSU_KernelPatch_patch.git --depth=1 SukiSU_Ultra
 
-      - name: Setup Latest android12-5.10 Kernel Source (Exact 5.10.239+)
+      - name: Set kernel version tag
         run: |
-          git clone https://android.googlesource.com/kernel/common.git --depth=1 -b common-android12-5.10 kernel
+          # Use the 5.10.239 tag from ChromeOS kernel repository
+          echo "git_tag=chromeos-5.10.239" >> $GITHUB_ENV
 
+      - name: Setup ChromeOS Kernel Source (5.10.239)
+        run: |
+          git clone https://chromium.googlesource.com/chromiumos/third_party/kernel.git -b ${{ env.git_tag }} --depth=1 kernel
       - name: Extract version from Makefile
         working-directory: kernel
         run: |
