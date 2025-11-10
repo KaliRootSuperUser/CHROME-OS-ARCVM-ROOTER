@@ -55,15 +55,16 @@ jobs:
         run: |
           cd $GITHUB_WORKSPACE
           git clone https://github.com/SukiSU-Ultra/SukiSU_KernelPatch_patch.git --depth=1 SukiSU_Ultra
-
-      - name: Set kernel version tag
-        run: |
-          # Use the 5.10.239 tag from ChromeOS kernel repository
-          echo "git_tag=chromeos-5.10.239" >> $GITHUB_ENV
-
       - name: Setup ChromeOS Kernel Source (5.10.239)
         run: |
-          git clone https://chromium.googlesource.com/chromiumos/third_party/kernel.git -b ${{ env.git_tag }} --depth=1 kernel
+          # Option 1: Use the v5.10.239 tag
+          git clone https://chromium.googlesource.com/chromiumos/third_party/kernel.git --depth=1 kernel
+          cd kernel
+          git fetch --depth=1 origin tag v5.10.239
+          git checkout v5.10.239
+          
+          # Alternative if the above fails:
+          # git clone https://chromium.googlesource.com/chromiumos/third_party/kernel.git -b chromeos-5.10-arcvm --depth=1 kernel
       - name: Extract version from Makefile
         working-directory: kernel
         run: |
