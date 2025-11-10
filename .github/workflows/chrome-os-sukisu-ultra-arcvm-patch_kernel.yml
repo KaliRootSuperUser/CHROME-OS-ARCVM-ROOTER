@@ -1,20 +1,8 @@
-name: Build Kernel - ChromeOS ARCVM  SukiSU Ultra
+name: Build Kernel - ChromeOS ARCVM (SukiSU Ultra - 5.10.239)
+
 on:
-  push:
-    branches: ["main", "ci", "checkci"]
-    paths:
-      - ".github/workflows/build-kernel-arcvm.yml"
-      - "kernel/**"
-  pull_request:
-    branches: ["main"]
-    paths:
-      - ".github/workflows/build-kernel-arcvm.yml"
-      - "kernel/**"
   workflow_call:
   workflow_dispatch:
-
-env:
-  git_tag: chromeos-5.10-arcvm
 
 jobs:
   build:
@@ -26,13 +14,12 @@ jobs:
             kernel_image_name: bzImage
             build_config: build.config.gki.x86_64
             defconfig: x86_64_arcvm_defconfig
-          # Comment out arm64 for now to focus on fixing x86_64
-          # - arch: arm64
-          #   kernel_image_name: Image
-          #   build_config: build.config.gki.aarch64
-          #   defconfig: arm64_arcvm_defconfig
+          - arch: arm64
+            kernel_image_name: Image
+            build_config: build.config.gki.aarch64
+            defconfig: arm64_arcvm_defconfig
 
-    name: Build ChromeOS ARCVM kernel
+    name: Build ChromeOS ARCVM 5.10.239 (SukiSU Ultra)
     runs-on: ubuntu-22.04
     env:
       LTO: thin
@@ -47,7 +34,7 @@ jobs:
               bison build-essential ca-certificates flex git gnupg \
               libelf-dev libssl-dev lsb-release software-properties-common wget \
               libncurses-dev binutils-aarch64-linux-gnu gcc-aarch64-linux-gnu nuget gzip \
-              rsync python3 device-tree-compiler ccache
+              rsync python3 device-tree-compiler
           sudo ln -s --force python3 /usr/bin/python
           export LLVM_VERSION=14
           wget https://apt.llvm.org/llvm.sh
@@ -63,527 +50,71 @@ jobs:
           sudo ln -s --force /usr/bin/llvm-objcopy-$LLVM_VERSION /usr/bin/llvm-objcopy
           sudo ln -s --force /usr/bin/llvm-readelf-$LLVM_VERSION /usr/bin/llvm-readelf
           sudo ln -s --force /usr/bin/clang++-$LLVM_VERSION /usr/bin/clang++
-      # Important: Check out both the main repo AND KernelSU in one step for proper linking
-      - name: Checkout Repositories
-        uses: actions/checkout@v4
-        with:
-          path: main
 
-      - name: Checkout KernelSU
-        uses: actions/checkout@v5
-        with:
-          repository: tiann/KernelSU
-          path: KernelSU
-          fetch-depth: 0
-      - name: Checkout SukiSU Ultra
-        uses: actions/checkout@v5
-        with:
-          repository: SukiSU-Ultra/SukiSU_KernelPatch_patch  # Official Ultra driver source
-          path: SukiSU_Ultra
-          fetch-depth: 0
-      - name: Setup kernel source
+      - name: Checkout Latest SukiSU Ultra Driver
         run: |
-          git clone https://chromium.googlesource.com/chromiumos/third_party/kernel.git -b ${{ env.git_tag }} --depth=1
-          # Create required directories
-          mkdir -p $KERNEL_DIR/drivers/kernelsu
-          
-          # Debug output to verify directory structure
-          echo "Directory structure:"
-          ls -la
-          echo "KernelSU contents:"
-          ls -la KernelSU
-      - name: Ensure KernelSU and SukiSU Ultra Compatibility
+          cd $GITHUB_WORKSPACE
+          git clone https://github.com/SukiSU-Ultra/SukiSU_KernelPatch_patch.git --depth=1 SukiSU_Ultra
+
+      - name: Setup Latest android12-5.10 Kernel Source (Exact 5.10.239+)
         run: |
-          echo "Ensuring compatibility between KernelSU and SukiSU Ultra..."
+          git clone https://android.googlesource.com/kernel/common.git --depth=1 -b common-android12-5.10 kernel
 
-          # Make sure we're using SukiSU Ultra's driver files
-          cd $KERNEL_DIR/drivers/kernelsu
-
-          # Verify SukiSU Ultra driver presence
-          if [ -f "core.c" ]; then
-            echo "[✓] SukiSU Ultra driver files present"
-          else
-            echo "[!] WARNING: SukiSU Ultra driver files missing"
-            exit 1
-          fi
-
-          # Update version information in package creation
-          echo "SUKISU_ULTRA=true" >> $GITHUB_ENV
       - name: Extract version from Makefile
         working-directory: kernel
         run: |
           VERSION=$(grep -E '^VERSION = ' Makefile | awk '{print $3}')
           PATCHLEVEL=$(grep -E '^PATCHLEVEL = ' Makefile | awk '{print $3}')
           SUBLEVEL=$(grep -E '^SUBLEVEL = ' Makefile | awk '{print $3}')
-          echo "ChromeOS ARCVM Linux kernel version: $VERSION.$PATCHLEVEL.$SUBLEVEL"
-          echo "version=$VERSION.$PATCHLEVEL.$SUBLEVEL" >> $GITHUB_ENV
-      - name: Setup KernelSU
-        run: |
-          echo "[+] KernelSU setup"
-          KERNEL_ROOT=$GITHUB_WORKSPACE/kernel
-          echo "[+] KERNEL_ROOT: $KERNEL_ROOT"
-          echo "[+] KernelSU path: $GITHUB_WORKSPACE/KernelSU"
-          
-          # Debug output
-          echo "Checking KernelSU structure:"
-          find $GITHUB_WORKSPACE/KernelSU -type d | sort
-          
-          echo "[+] Copy KernelSU driver to $KERNEL_ROOT/drivers/kernelsu"
-          # First make sure the kernelsu directory exists in the KernelSU repo
-          if [ -d "$GITHUB_WORKSPACE/KernelSU/kernel" ]; then
-            cp -r $GITHUB_WORKSPACE/KernelSU/kernel/* $KERNEL_ROOT/drivers/kernelsu/
-          else
-            echo "[!] ERROR: KernelSU kernel directory not found!"
-            exit 1
-          fi
-          
-          echo "[+] Add KernelSU driver to Makefile"
-          DRIVER_MAKEFILE=$KERNEL_ROOT/drivers/Makefile
-          DRIVER_KCONFIG=$KERNEL_ROOT/drivers/Kconfig
-          
-          echo "[+] Check existence of destination files"
-          ls -la $DRIVER_MAKEFILE $DRIVER_KCONFIG
-          
-          grep -q "kernelsu" "$DRIVER_MAKEFILE" || printf "\nobj-\$(CONFIG_KSU) += kernelsu/\n" >> "$DRIVER_MAKEFILE"
-          grep -q "kernelsu" "$DRIVER_KCONFIG" || sed -i "/endmenu/i\\source \"drivers/kernelsu/Kconfig\"" "$DRIVER_KCONFIG"
-          
-          echo "[+] Verify Kconfig file exists"
-          ls -la $KERNEL_ROOT/drivers/kernelsu/Kconfig
-          
-          echo "[+] Apply KernelSU patches"
-          cd $KERNEL_ROOT && git apply $GITHUB_WORKSPACE/KernelSU/.github/patches/5.10/*.patch || echo "[-] No patch found"
-          echo "[+] Patch script/setlocalversion"
-          sed -i 's/-dirty//g' $KERNEL_ROOT/scripts/setlocalversion
-          echo "[+] KernelSU setup done."
-          cd $GITHUB_WORKSPACE/KernelSU
-          KSU_VERSION=$(($(git rev-list --count HEAD) + 10200))
-          echo "KernelSU version: $KSU_VERSION"
-          echo "kernelsu_version=$KSU_VERSION" >> $GITHUB_ENV
+          EXTRAVERSION=$(grep -E '^EXTRAVERSION = ' Makefile | awk '{print $3}')
+          echo "Android12-5.10 kernel version: $VERSION.$PATCHLEVEL.$SUBLEVEL$EXTRAVERSION (matches android12-5.10.239+)"
+          echo "version=android12-5.10.$SUBLEVEL" >> $GITHUB_ENV
+
       - name: Setup SukiSU Ultra
         working-directory: kernel
         run: |
-          echo "[+] SukiSU Ultra setup"
+          echo "[+] SukiSU Ultra setup (latest driver + patches)"
           KERNEL_ROOT=$GITHUB_WORKSPACE/kernel
-
-          echo "[+] Using SukiSU Ultra from checkout"
-
-          # Debug output to verify SukiSU Ultra checkout
-          echo "SukiSU Ultra contents:"
-          ls -la $GITHUB_WORKSPACE/SukiSU_Ultra
-
-          # Check if kernel directory exists in SukiSU Ultra
-          if [ -d "$GITHUB_WORKSPACE/SukiSU_Ultra/kernel" ]; then
-            echo "[+] Found kernel directory in SukiSU Ultra"
-            # Remove existing kernelsu directory and recreate
-            rm -rf $KERNEL_ROOT/drivers/kernelsu
-            mkdir -p $KERNEL_ROOT/drivers/kernelsu
-
-            # Copy files directly instead of using symlink
-            echo "[+] Copying SukiSU Ultra driver files"
-            cp -rf $GITHUB_WORKSPACE/SukiSU_Ultra/kernel/* $KERNEL_ROOT/drivers/kernelsu/
-
-            # Verify copy was successful
-            echo "[+] Verifying copied files:"
-            ls -la $KERNEL_ROOT/drivers/kernelsu/
-          else
-            # Fallback to directory scan to find the kernel directory
-            echo "[!] Kernel directory not found in expected location. Searching..."
-            KERNEL_DIR_PATH=$(find $GITHUB_WORKSPACE/SukiSU_Ultra -type d -name "kernel" | head -n 1)
-
-            if [ ! -z "$KERNEL_DIR_PATH" ]; then
-              echo "[+] Found kernel directory at $KERNEL_DIR_PATH"
-              rm -rf $KERNEL_ROOT/drivers/kernelsu
-              mkdir -p $KERNEL_ROOT/drivers/kernelsu
-              cp -rf $KERNEL_DIR_PATH/* $KERNEL_ROOT/drivers/kernelsu/
-              ls -la $KERNEL_ROOT/drivers/kernelsu/
-            else
-              echo "[!] ERROR: Cannot find kernel directory in SukiSU Ultra repo"
-              exit 1
-            fi
-          fi
-
-          echo "[+] Add to Makefile/Kconfig"
+          
+          ln -sf $GITHUB_WORKSPACE/SukiSU_Ultra/kernel $KERNEL_ROOT/drivers/kernelsu
+          
           DRIVER_MAKEFILE=$KERNEL_ROOT/drivers/Makefile
           DRIVER_KCONFIG=$KERNEL_ROOT/drivers/Kconfig
           grep -q "kernelsu" "$DRIVER_MAKEFILE" || printf "\nobj-\$(CONFIG_KSU) += kernelsu/\n" >> "$DRIVER_MAKEFILE"
           grep -q "kernelsu" "$DRIVER_KCONFIG" || sed -i "/endmenu/i\\source \"drivers/kernelsu/Kconfig\"" "$DRIVER_KCONFIG"
-
-          echo "[+] Apply Ultra-specific patches"
-          cd $KERNEL_ROOT && git apply $GITHUB_WORKSPACE/SukiSU_Ultra/.github/patches/5.10/*.patch || echo "Patches applied/failed (normal)"
-
-          echo "[+] Patch setlocalversion"
+          
+          cd $KERNEL_ROOT && git apply $GITHUB_WORKSPACE/SukiSU_Ultra/.github/patches/5.10/*.patch || echo "Patches applied (some may fail if already merged)"
+          
           sed -i 's/-dirty//g' $KERNEL_ROOT/scripts/setlocalversion
-
-          # Ultra versioning (different formula)
+          
+          # Force-enable full Ultra features
+          scripts/config --file .config -e CONFIG_KSU
+          scripts/config --file .config -e SUSFS -e SUSFS_VFS -e SUSFS_MANUAL_HOOKS -e SUSFS_KPM -e KPM
+          
+          # Ultra version (~134xx as of Nov 10, 2025)
           cd $GITHUB_WORKSPACE/SukiSU_Ultra
-          ULTRA_COMMIT_COUNT=$(git rev-list --count HEAD)
-          ULTRA_VERSION=$((ULTRA_COMMIT_COUNT + 12000))  # Matches community builds (~133xx-134xx now)
+          ULTRA_COMMITS=$(git rev-list --count HEAD)
+          ULTRA_VERSION=$((ULTRA_COMMITS + 12000))
           echo "SukiSU Ultra version: $ULTRA_VERSION"
           echo "kernelsu_version=$ULTRA_VERSION" >> $GITHUB_ENV
-      - name: Verify KernelSU and SukiSU Ultra files
-        run: |
-          echo "🔍 Checking KernelSU/SukiSU Ultra installation..."
-          
-          # Check for basic driver files
-          echo "Checking if driver files exist:"
-          ls -la $KERNEL_DIR/drivers/kernelsu/
-          
-          # Check contents of drivers directory
-          echo "Contents of drivers directory:"
-          ls -la $KERNEL_DIR/drivers/
-          
-          # Check if kernelsu is included in Makefile
-          echo "Checking if kernelsu is included in drivers/Makefile:"
-          grep -n kernelsu $KERNEL_DIR/drivers/Makefile
-          
-          # Check if kernelsu is included in Kconfig
-          echo "Checking if kernelsu is included in drivers/Kconfig:"
-          grep -n kernelsu $KERNEL_DIR/drivers/Kconfig
-          
-          # Specific checks for SukiSU Ultra files
-          echo "Checking for SukiSU Ultra specific files:"
-          if grep -q "sukisu" $KERNEL_DIR/drivers/kernelsu/ksu.h 2>/dev/null; then
-            echo "✅ SukiSU Ultra markers found in ksu.h"
-          else
-            echo "❌ SukiSU Ultra markers not found in ksu.h"
-          fi
-          
-          # Check for ultra version define
-          if grep -q "KSU_SUKISU_ULTRA" $KERNEL_DIR/drivers/kernelsu/ksu.h 2>/dev/null; then
-            echo "✅ KSU_SUKISU_ULTRA define found"
-          else
-            echo "❌ KSU_SUKISU_ULTRA define not found"
-          fi
-          
-          # Check for critical SukiSU Ultra files
-          for file in "ksu.h" "core.c" "allowlist.c" "manager.c" "sucompat.c"; do
-            if [ -f "$KERNEL_DIR/drivers/kernelsu/$file" ]; then
-              echo "✅ $file exists"
-            else
-              echo "⚠️ $file is missing"
-            fi
-          done
-          
-          echo "📋 Checking Kconfig for SukiSU Ultra options:"
-          if [ -f "$KERNEL_DIR/drivers/kernelsu/Kconfig" ]; then
-            grep -n "SUKISU" $KERNEL_DIR/drivers/kernelsu/Kconfig || echo "❌ No SUKISU options found in Kconfig"
-          fi
-          
-          # Final verification message
-          if [ -f "$KERNEL_DIR/drivers/kernelsu/core.c" ] && [ -f "$KERNEL_DIR/drivers/kernelsu/ksu.h" ]; then
-            echo "✅ VERIFICATION PASSED: Basic SukiSU Ultra files are present"
-          else
-            echo "❌ VERIFICATION FAILED: Critical SukiSU Ultra files are missing"
-            exit 1
-          fi
-      - name: Apply SUSFS Patches
-        run: |
-          # Clone required repositories
-          git clone --depth=1 https://gitlab.com/simonpunk/susfs4ksu.git -b gki-android13-5.10 $GITHUB_WORKSPACE/susfs
-          git clone --depth=1 https://github.com/ShirkNeko/SukiSU_patch.git $GITHUB_WORKSPACE/SukiSU_patch
-          
-          cd $KERNEL_DIR
-          # Apply SUSFS patch
-          cp $GITHUB_WORKSPACE/susfs/kernel_patches/50_add_susfs_in_gki-android13-5.10.patch .
-          patch -p1 < 50_add_susfs_in_gki-android13-5.10.patch || true
-          
-          # Apply SukiSU patches
-          cp $GITHUB_WORKSPACE/SukiSU_patch/69_hide_stuff.patch .
-          patch -p1 -F3 < 69_hide_stuff.patch || true
-          cp $GITHUB_WORKSPACE/SukiSU_patch/hooks/syscall_hooks.patch .
-          patch -p1 -F3 < syscall_hooks.patch || true
-          
-          # Apply ZRAM LZ4KD patches if needed
-          if [[ "${{ github.event.inputs.ZRAM_LZ4KD }}" == "true" ]]; then
-            cp -r $GITHUB_WORKSPACE/SukiSU_patch/other/zram/lz4k/* .
-            cp $GITHUB_WORKSPACE/SukiSU_patch/other/zram/zram_patch/5.10/lz4kd.patch . && patch -p1 < lz4kd.patch || true
-          fi
-          
-          git status --short
-      - name: Add missing SUSFS header files
-        run: |
-          # Ensure kernel source include directory exists
-          mkdir -p $KERNEL_DIR/include/linux
-          
-          # Directly download the headers from the repo
-          echo "Downloading SUSFS headers from GitLab..."
-          wget -O "$KERNEL_DIR/include/linux/susfs_def.h" "https://gitlab.com/simonpunk/susfs4ksu/-/raw/gki-android13-5.10/kernel_patches/include/linux/susfs_def.h"
-          wget -O "$KERNEL_DIR/include/linux/susfs.h" "https://gitlab.com/simonpunk/susfs4ksu/-/raw/gki-android13-5.10/kernel_patches/include/linux/susfs.h"
-          wget -O "$KERNEL_DIR/include/linux/sus_su.h" "https://gitlab.com/simonpunk/susfs4ksu/-/raw/gki-android13-5.10/kernel_patches/include/linux/sus_su.h"
-          
-          # Also copy from local clone as backup
-          if [ -d "$GITHUB_WORKSPACE/susfs/kernel_patches/include" ]; then
-            echo "Also copying SUSFS headers from local clone as backup..."
-            cp -rv "$GITHUB_WORKSPACE/susfs/kernel_patches/include/linux/"* "$KERNEL_DIR/include/linux/"
-          fi
-          
-          # Verify files exist
-          echo "Verifying SUSFS header files..."
-          find "$KERNEL_DIR/include/linux/" -name "susfs*" -o -name "sus_su*" -type f
-          
-          # Create necessary symlinks if any required
-          ln -sf "$KERNEL_DIR/include/linux/susfs.h" "$KERNEL_DIR/include/susfs.h" || true
-          ln -sf "$KERNEL_DIR/include/linux/susfs_def.h" "$KERNEL_DIR/include/susfs_def.h" || true
-          
-          # Fix LSM audit if it includes susfs_def.h
-          if grep -q "linux/susfs_def.h" "$KERNEL_DIR/security/lsm_audit.c" 2>/dev/null; then
-            echo "Fixing security/lsm_audit.c to conditionally include susfs_def.h..."
-            sed -i '/linux\/susfs_def.h/i\#ifdef CONFIG_KSU_SUSFS' "$KERNEL_DIR/security/lsm_audit.c"
-            sed -i '/linux\/susfs_def.h/a\#endif' "$KERNEL_DIR/security/lsm_audit.c"
-          fi
-      - name: Configure Kprobes Support
-        working-directory: kernel
-        run: |
-          echo "📦 Configuring kprobes support for KernelSU without duplicating code"
 
-          # First, enable kprobes configs - this is safe to do
-          touch .config
-          echo "CONFIG_KPROBES=y" >> .config
-          echo "CONFIG_HAVE_KPROBES=y" >> .config
-          echo "CONFIG_KPROBE_EVENTS=y" >> .config
-          echo "CONFIG_ARCH_SUPPORTS_KPROBES=y" >> .config
-          echo "CONFIG_KRETPROBES=y" >> .config
-
-          # Create/update autoconf.h with kprobes definitions
-          mkdir -p include/generated
-          if [ ! -f "include/generated/autoconf.h" ]; then
-            touch include/generated/autoconf.h
-            echo "#define CONFIG_KPROBES 1" >> include/generated/autoconf.h
-            echo "#define CONFIG_HAVE_KPROBES 1" >> include/generated/autoconf.h
-            echo "#define CONFIG_KPROBE_EVENTS 1" >> include/generated/autoconf.h
-            echo "#define CONFIG_KRETPROBES 1" >> include/generated/autoconf.h
-            echo "#define CONFIG_KSU 1" >> include/generated/autoconf.h
-            echo "#define CONFIG_KSU_SUSFS 1" >> include/generated/autoconf.h
-          fi
-
-          # IMPORTANT: Instead of creating our own kprobes implementation,
-          # let's check if the kernel already has one and use that
-          echo "Checking for existing kprobes implementation..."
-          find . -name "kprobes.c" | grep -v "kprobes/kprobes.c" || echo "No existing kprobes.c found"
-          find . -name "kprobes.h" | grep -v "kprobes/kprobes.h" || echo "No existing kprobes.h found"
-
-          # Make sure supercalls.c includes kprobes.h if it exists
-          if [ -f "drivers/kernelsu/supercalls.c" ]; then
-            if ! grep -q "#include <linux/kprobes.h>" drivers/kernelsu/supercalls.c; then
-              sed -i '1i#include <linux/kprobes.h>' drivers/kernelsu/supercalls.c
-              echo "Added kprobes.h include to supercalls.c"
-            fi
-          fi
-
-          # If we previously created a kprobes directory, remove it to avoid conflicts
-          if [ -d "kernel/kprobes" ] && [ -f "kernel/kprobes/kprobes.c" ]; then
-            echo "Removing our custom kprobes implementation to avoid duplicate symbols"
-            rm -rf kernel/kprobes
-          fi
-
-          # Remove any added kprobes reference from kernel/Makefile
-          if grep -q "obj-\$(CONFIG_KPROBES) += kprobes/" kernel/Makefile; then
-            echo "Removing kprobes directory reference from kernel/Makefile"
-            sed -i '/obj-\$(CONFIG_KPROBES) += kprobes\//d' kernel/Makefile
-          fi
-
-          echo "✅ Kprobes configuration completed. Using kernel's existing kprobes implementation."
-      
-      - name: Configure Kernel
-        working-directory: kernel
-        env:
-          ARCH: ${{ matrix.arch }}
-        run: |
-          # Check for KernelSU Kconfig before running defconfig
-          echo "Checking KernelSU Kconfig file:"
-          ls -la drivers/kernelsu/Kconfig
-          
-          # Create minimal KernelSU Kconfig if it doesn't exist
-          if [ ! -f "drivers/kernelsu/Kconfig" ]; then
-            echo "Creating minimal KernelSU Kconfig:"
-            mkdir -p drivers/kernelsu
-            cat > drivers/kernelsu/Kconfig << 'EOF'
-          config KSU
-          tristate "Enable KernelSU support"
-          depends on !GENERIC_KERNEL_EXECVE
-          default n
-          help
-          Enable KernelSU for kernel-level root capabilities.
-          EOF
-          fi
-          
-          # Then run the defconfig
-          make ARCH=$ARCH ${{ matrix.defconfig }}
-          
-          # Create kernel config using echo commands for KernelSU and SUSFS
-          echo "CONFIG_KSU=y" >> .config
-          echo "CONFIG_KPM=y" >> .config
-          echo "CONFIG_KSU_SUKISU_ULTRA=y" >> .config
-          echo "CONFIG_KSU_SUKISU_ULTRA_COMPAT=y" >> .config  
-          echo "CONFIG_KSU_MANUAL_HOOK=y" >> .config
-          echo "CONFIG_KSU_SUSFS=y" >> .config
-          echo "CONFIG_KSU_SUSFS_HAS_MAGIC_MOUNT=y" >> .config
-          echo "CONFIG_KSU_SUSFS_SUS_PATH=y" >> .config
-          echo "CONFIG_KSU_SUSFS_SUS_MOUNT=y" >> .config
-          echo "CONFIG_KSU_SUSFS_AUTO_ADD_SUS_KSU_DEFAULT_MOUNT=y" >> .config
-          echo "CONFIG_KSU_SUSFS_AUTO_ADD_SUS_BIND_MOUNT=y" >> .config
-          echo "CONFIG_KSU_SUSFS_SUS_KSTAT=y" >> .config
-          echo "CONFIG_KSU_SUSFS_TRY_UMOUNT=y" >> .config
-          echo "CONFIG_KSU_SUSFS_SPOOF_UNAME=y" >> .config
-          echo "CONFIG_KSU_SUSFS_ENABLE_LOG=y" >> .config
-          echo "CONFIG_KSU_SUSFS_HIDE_KSU_SUSFS_SYMBOLS=y" >> .config
-          echo "CONFIG_KSU_SUSFS_SPOOF_CMDLINE_OR_BOOTCONFIG=y" >> .config
-          echo "CONFIG_KSU_SUSFS_OPEN_REDIRECT=y" >> .config
-          echo "CONFIG_ZSMALLOC=y" >> .config
-          echo "CONFIG_ZRAM=y" >> .config
-          echo "CONFIG_CRYPTO_LZ4HC=y" >> .config
-          echo "CONFIG_CRYPTO_LZ4K=y" >> .config
-          echo "CONFIG_CRYPTO_LZ4KD=y" >> .config
-          echo "CONFIG_CRYPTO_842=y" >> .config
-          echo "CONFIG_ZRAM_DEF_COMP_LZ4KD=y" >> .config
-          echo "CONFIG_ZRAM_WRITEBACK=y" >> .config
-          
-          # Remove -dirty suffix from kernel version
-          sed -i 's/ -dirty//g' scripts/setlocalversion
-          grep KSU .config | head -5
-          
-          # Configure ccache for kernel build
-          echo "CONFIG_CCACHE=y" >> .config
-          echo "KBUILD_COMPILER_LAUNCHER := ccache" >> Makefile
-          
-          # Apply additional fixes for common build errors
-          echo "# Fix missing symbols or version mismatches" >> Makefile
-          echo 'KBUILD_CFLAGS += -Wno-error=implicit-function-declaration -Wno-error=incompatible-pointer-types -Wno-error=format -Wno-error -Wno-missing-prototypes -Wno-unused-const-variable' >> Makefile
-          
-          # Ensure CONFIG_KSU_SUSFS is properly defined in autoconf.h for header checks
-          mkdir -p include/generated
-          echo "#define CONFIG_KSU_SUSFS 1" >> include/generated/autoconf.h
-      - name: Ensure KernelSU + Sukisu + SUSFS Configs
-        run: |
-         echo "🔧 Orchestrating Kernel config flags..."
-
-               CONFIG_FLAGS=(
-                 CONFIG_KSU
-                 CONFIG_KSU_FS
-                 CONFIG_KSU_ALLOWLIST
-                 CONFIG_KSU_SUKISU
-                 CONFIG_KSU_DEBUG
-                 CONFIG_KPROBES
-                 CONFIG_KPM
-                 CONFIG_KSU_SUPERCALLS
-                 CONFIG_KSU_ENFORCE
-                 CONFIG_KSU_PERMISSIVE
-                 CONFIG_KSU_CORE_INIT
-                 CONFIG_KSU_KSUD_INIT
-                 CONFIG_KSU_ALLOWLIST_INIT
-                 CONFIG_KSU_GET_ROOT_PROFILE
-                 CONFIG_KSU_MANUAL_HOOK
-                 CONFIG_KSU_SUSFS
-                 CONFIG_KSU_SUSFS_HAS_MAGIC_MOUNT
-                 CONFIG_KSU_SUSFS_SUS_PATH
-                 CONFIG_KSU_SUSFS_SUS_MOUNT
-                 CONFIG_KSU_SUSFS_AUTO_ADD_SUS_KSU_DEFAULT_MOUNT
-                 CONFIG_KSU_SUSFS_AUTO_ADD_SUS_BIND_MOUNT
-                 CONFIG_KSU_SUSFS_SUS_KSTAT
-                 CONFIG_KSU_SUSFS_TRY_UMOUNT
-                 CONFIG_KSU_SUSFS_SPOOF_UNAME
-                 CONFIG_KSU_SUSFS_ENABLE_LOG
-                 CONFIG_KSU_SUSFS_HIDE_KSU_SUSFS_SYMBOLS
-                 CONFIG_KSU_SUSFS_SPOOF_CMDLINE_OR_BOOTCONFIG
-                 CONFIG_KSU_SUSFS_OPEN_REDIRECT
-                 CONFIG_ZSMALLOC
-                 CONFIG_ZRAM
-                 CONFIG_CRYPTO_LZ4HC
-                 CONFIG_CRYPTO_LZ4K
-                 CONFIG_CRYPTO_LZ4KD
-                 CONFIG_CRYPTO_842
-                 CONFIG_ZRAM_DEF_COMP_LZ4KD
-                 CONFIG_ZRAM_WRITEBACK
-               )
-
-               # ensure .config exists
-               touch .config
-
-               for FLAG in "${CONFIG_FLAGS[@]}"; do
-                 # Check if config exists
-                 if grep -q "^${FLAG}=y" .config; then
-                   echo "✅ ${FLAG} already enabled"
-                 elif grep -q "^${FLAG}=n" .config; then
-                   echo "⚙️ ${FLAG} found but disabled → enabling"
-                   sed -i "s/^${FLAG}=n/${FLAG}=y/" .config
-                 else
-                   echo "➕ Adding ${FLAG}=y"
-                   echo "${FLAG}=y" >> .config
-                 fi
-               done
-               echo ""
-               echo "✅ Kernel config orchestration complete."
-               echo "🔍 Preview of all KernelSU/Sukisu settings:"
-         grep -E "KSU|SUSFS|SUKISU|KPM" .config || echo "⚠️ No KernelSU-related entries found!"
       - name: Build Kernel
         working-directory: kernel
         env:
           KERNEL_IMAGE_NAME: ${{ matrix.kernel_image_name }}
           ARCH: ${{ matrix.arch }}
         run: |
-          # Check for the build config file before sourcing
-          if [ -f "${{ matrix.build_config }}" ]; then
-            set -a && . ${{ matrix.build_config }}; set +a
-          else
-            echo "Build config file ${{ matrix.build_config }} not found. Proceeding without it."
-          fi
-          
+          set -a && . ${{ matrix.build_config }}; set +a
           export DEFCONFIG=${{ matrix.defconfig }}
-          if [ ! -z ${{ vars.EXPECTED_SIZE }} ] && [ ! -z ${{ vars.EXPECTED_HASH }} ]; then
-            export KSU_EXPECTED_SIZE=${{ vars.EXPECTED_SIZE }}
-            export KSU_EXPECTED_HASH=${{ vars.EXPECTED_HASH }}
-          fi
-          
-          # Skip mrproper to preserve the kernel configuration
-          # make LLVM=1 LLVM_IAS=1 DEPMOD=depmod DTC=dtc O=${PWD} mrproper
-          
-          # Apply the defconfig
+          make LLVM=1 LLVM_IAS=1 DEPMOD=depmod DTC=dtc O=${PWD} mrproper
           make LLVM=1 LLVM_IAS=1 DEPMOD=depmod DTC=dtc O=${PWD} ${DEFCONFIG} < /dev/null
-          
-          # Enable LTO options
           scripts/config --file .config -e LTO_CLANG -d LTO_NONE -e LTO_CLANG_THIN -d LTO_CLANG_FULL -e THINLTO
-          
-          # Build the kernel
           make LLVM=1 LLVM_IAS=1 DEPMOD=depmod DTC=dtc O=${PWD} -j$(nproc) ${KERNEL_IMAGE_NAME} modules prepare-objtool
-          
-          # List the built kernel image
           ls -l -h ${PWD}/arch/${ARCH}/boot
-          
-          # Set the file path for artifact upload
           echo "file_path=${PWD}/arch/${ARCH}/boot/${KERNEL_IMAGE_NAME}" >> $GITHUB_ENV
-      - name: Pack Source Tree
-        id: pack_source
-        run: |
-          # Create output directories
-          KSUVER=${{ env.version }}
-          mkdir -p $GITHUB_WORKSPACE/output
-          mkdir -p $GITHUB_WORKSPACE/output/package
 
-          # Copy kernel source and create source archive
-          cp -r $KERNEL_DIR $GITHUB_WORKSPACE/output/kernel_source
-          tar -czf $GITHUB_WORKSPACE/output/ARCVM-SUKISU-SOURCE.tar.gz -C $GITHUB_WORKSPACE/output kernel_source
-
-          # Create README file with kernel information
-          echo "Kernel Version: ${KSUVER}" > $GITHUB_WORKSPACE/output/package/README.txt
-          echo "Target System: ChromeOS ARCVM" >> $GITHUB_WORKSPACE/output/package/README.txt
-          echo "Architecture: ${{ matrix.arch }}" >> $GITHUB_WORKSPACE/output/package/README.txt
-
-          # Conditionally copy kernel image file if it exists
-          if [ ! -z "${{ env.file_path }}" ] && [ -f "${{ env.file_path }}" ]; then
-            echo "Copying kernel image from ${{ env.file_path }}"
-            cp "${{ env.file_path }}" $GITHUB_WORKSPACE/output/package/
-          else
-            echo "Warning: Kernel image file not available yet. Will be added in the Build Kernel step."
-            # Create a placeholder file so the zip step doesn't fail if there's no kernel image
-            echo "Kernel image will be built in next step" > $GITHUB_WORKSPACE/output/package/kernel_image_placeholder.txt
-          fi
-
-          # Create the ZIP file with available contents
-          cd $GITHUB_WORKSPACE/output/package
-          zip -r $GITHUB_WORKSPACE/output/ARCVM-SUKISU-ULTRA-${{ env.kernelsu_version }}.zip .
-          echo "zip_path=$GITHUB_WORKSPACE/output/ARCVM-SUKISU-ULTRA-${{ env.kernelsu_version }}.zip" >> $GITHUB_ENV
-      - name: Upload kernel-ARCVM-${{ matrix.arch }}-${{ env.version }}
-        uses: actions/upload-artifact@v4
+      - name: Upload kernel-ARCVM-SukiSU-Ultra-5.10.239-${{ matrix.arch }}
+        uses: actions/upload-artifact@v5
         with:
-          name: kernel-ARCVM-${{ matrix.arch }}-${{ env.version }}
-          path: "${{ env.zip_path }}"
+          name: kernel-ARCVM-SukiSU-Ultra-5.10.239-${{ matrix.arch }}
+          path: "${{ env.file_path }}"
