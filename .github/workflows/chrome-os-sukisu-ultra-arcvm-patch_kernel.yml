@@ -81,8 +81,6 @@ jobs:
           repository: SukiSU-Ultra/SukiSU_KernelPatch_patch  # Official Ultra driver source
           path: SukiSU_Ultra
           fetch-depth: 0
-
-
       - name: Setup kernel source
         run: |
           git clone https://chromium.googlesource.com/chromiumos/third_party/kernel.git -b ${{ env.git_tag }} --depth=1
@@ -94,38 +92,6 @@ jobs:
           ls -la
           echo "KernelSU contents:"
           ls -la KernelSU
-      - name: Setup SukiSU Ultra
-        working-directory: kernel
-        run: |
-          echo "[+] SukiSU Ultra setup"
-          KERNEL_ROOT=$GITHUB_WORKSPACE/kernel
-          
-          # Always get latest Ultra driver
-          cd $GITHUB_WORKSPACE
-          rm -rf SukiSU_Ultra
-          git clone https://github.com/SukiSU-Ultra/SukiSU_KernelPatch_patch.git --depth=1
-          
-          echo "[+] Copy SukiSU Ultra driver"
-          ln -sf $GITHUB_WORKSPACE/SukiSU_KernelPatch_patch/kernel $KERNEL_ROOT/drivers/kernelsu
-          
-          echo "[+] Add to Makefile/Kconfig (same as before)"
-          DRIVER_MAKEFILE=$KERNEL_ROOT/drivers/Makefile
-          DRIVER_KCONFIG=$KERNEL_ROOT/drivers/Kconfig
-          grep -q "kernelsu" "$DRIVER_MAKEFILE" || printf "\nobj-\$(CONFIG_KSU) += kernelsu/\n" >> "$DRIVER_MAKEFILE"
-          grep -q "kernelsu" "$DRIVER_KCONFIG" || sed -i "/endmenu/i\\source \"drivers/kernelsu/Kconfig\"" "$DRIVER_KCONFIG"
-          
-          echo "[+] Apply Ultra-specific patches"
-          cd $KERNEL_ROOT && git apply $GITHUB_WORKSPACE/SukiSU_KernelPatch_patch/.github/patches/5.10/*.patch || echo "Patches applied/failed (normal)"
-          
-          echo "[+] Patch setlocalversion"
-          sed -i 's/-dirty//g' $KERNEL_ROOT/scripts/setlocalversion
-          
-          # Ultra versioning (different formula)
-          cd $GITHUB_WORKSPACE/SukiSU_KernelPatch_patch
-          ULTRA_COMMIT_COUNT=$(git rev-list --count HEAD)
-          ULTRA_VERSION=$((ULTRA_COMMIT_COUNT + 12000))  # Matches community builds (~133xx-134xx now)
-          echo "SukiSU Ultra version: $ULTRA_VERSION"
-          echo "kernelsu_version=$ULTRA_VERSION" >> $GITHUB_ENV
       - name: Ensure KernelSU and SukiSU Ultra Compatibility
         run: |
           echo "Ensuring compatibility between KernelSU and SukiSU Ultra..."
@@ -193,20 +159,123 @@ jobs:
           KSU_VERSION=$(($(git rev-list --count HEAD) + 10200))
           echo "KernelSU version: $KSU_VERSION"
           echo "kernelsu_version=$KSU_VERSION" >> $GITHUB_ENV
-      - name: Verify KernelSU files
+      - name: Setup SukiSU Ultra
+        working-directory: kernel
         run: |
-          echo "Checking if KernelSU Kconfig exists:"
+          echo "[+] SukiSU Ultra setup"
+          KERNEL_ROOT=$GITHUB_WORKSPACE/kernel
+
+          echo "[+] Using SukiSU Ultra from checkout"
+
+          # Debug output to verify SukiSU Ultra checkout
+          echo "SukiSU Ultra contents:"
+          ls -la $GITHUB_WORKSPACE/SukiSU_Ultra
+
+          # Check if kernel directory exists in SukiSU Ultra
+          if [ -d "$GITHUB_WORKSPACE/SukiSU_Ultra/kernel" ]; then
+            echo "[+] Found kernel directory in SukiSU Ultra"
+            # Remove existing kernelsu directory and recreate
+            rm -rf $KERNEL_ROOT/drivers/kernelsu
+            mkdir -p $KERNEL_ROOT/drivers/kernelsu
+
+            # Copy files directly instead of using symlink
+            echo "[+] Copying SukiSU Ultra driver files"
+            cp -rf $GITHUB_WORKSPACE/SukiSU_Ultra/kernel/* $KERNEL_ROOT/drivers/kernelsu/
+
+            # Verify copy was successful
+            echo "[+] Verifying copied files:"
+            ls -la $KERNEL_ROOT/drivers/kernelsu/
+          else
+            # Fallback to directory scan to find the kernel directory
+            echo "[!] Kernel directory not found in expected location. Searching..."
+            KERNEL_DIR_PATH=$(find $GITHUB_WORKSPACE/SukiSU_Ultra -type d -name "kernel" | head -n 1)
+
+            if [ ! -z "$KERNEL_DIR_PATH" ]; then
+              echo "[+] Found kernel directory at $KERNEL_DIR_PATH"
+              rm -rf $KERNEL_ROOT/drivers/kernelsu
+              mkdir -p $KERNEL_ROOT/drivers/kernelsu
+              cp -rf $KERNEL_DIR_PATH/* $KERNEL_ROOT/drivers/kernelsu/
+              ls -la $KERNEL_ROOT/drivers/kernelsu/
+            else
+              echo "[!] ERROR: Cannot find kernel directory in SukiSU Ultra repo"
+              exit 1
+            fi
+          fi
+
+          echo "[+] Add to Makefile/Kconfig"
+          DRIVER_MAKEFILE=$KERNEL_ROOT/drivers/Makefile
+          DRIVER_KCONFIG=$KERNEL_ROOT/drivers/Kconfig
+          grep -q "kernelsu" "$DRIVER_MAKEFILE" || printf "\nobj-\$(CONFIG_KSU) += kernelsu/\n" >> "$DRIVER_MAKEFILE"
+          grep -q "kernelsu" "$DRIVER_KCONFIG" || sed -i "/endmenu/i\\source \"drivers/kernelsu/Kconfig\"" "$DRIVER_KCONFIG"
+
+          echo "[+] Apply Ultra-specific patches"
+          cd $KERNEL_ROOT && git apply $GITHUB_WORKSPACE/SukiSU_Ultra/.github/patches/5.10/*.patch || echo "Patches applied/failed (normal)"
+
+          echo "[+] Patch setlocalversion"
+          sed -i 's/-dirty//g' $KERNEL_ROOT/scripts/setlocalversion
+
+          # Ultra versioning (different formula)
+          cd $GITHUB_WORKSPACE/SukiSU_Ultra
+          ULTRA_COMMIT_COUNT=$(git rev-list --count HEAD)
+          ULTRA_VERSION=$((ULTRA_COMMIT_COUNT + 12000))  # Matches community builds (~133xx-134xx now)
+          echo "SukiSU Ultra version: $ULTRA_VERSION"
+          echo "kernelsu_version=$ULTRA_VERSION" >> $GITHUB_ENV
+      - name: Verify KernelSU and SukiSU Ultra files
+        run: |
+          echo "🔍 Checking KernelSU/SukiSU Ultra installation..."
+          
+          # Check for basic driver files
+          echo "Checking if driver files exist:"
           ls -la $KERNEL_DIR/drivers/kernelsu/
+          
+          # Check contents of drivers directory
           echo "Contents of drivers directory:"
           ls -la $KERNEL_DIR/drivers/
           
-          # Check if the file was included in Makefile
+          # Check if kernelsu is included in Makefile
           echo "Checking if kernelsu is included in drivers/Makefile:"
           grep -n kernelsu $KERNEL_DIR/drivers/Makefile
           
-          # Check if the file was included in Kconfig
+          # Check if kernelsu is included in Kconfig
           echo "Checking if kernelsu is included in drivers/Kconfig:"
           grep -n kernelsu $KERNEL_DIR/drivers/Kconfig
+          
+          # Specific checks for SukiSU Ultra files
+          echo "Checking for SukiSU Ultra specific files:"
+          if grep -q "sukisu" $KERNEL_DIR/drivers/kernelsu/ksu.h 2>/dev/null; then
+            echo "✅ SukiSU Ultra markers found in ksu.h"
+          else
+            echo "❌ SukiSU Ultra markers not found in ksu.h"
+          fi
+          
+          # Check for ultra version define
+          if grep -q "KSU_SUKISU_ULTRA" $KERNEL_DIR/drivers/kernelsu/ksu.h 2>/dev/null; then
+            echo "✅ KSU_SUKISU_ULTRA define found"
+          else
+            echo "❌ KSU_SUKISU_ULTRA define not found"
+          fi
+          
+          # Check for critical SukiSU Ultra files
+          for file in "ksu.h" "core.c" "allowlist.c" "manager.c" "sucompat.c"; do
+            if [ -f "$KERNEL_DIR/drivers/kernelsu/$file" ]; then
+              echo "✅ $file exists"
+            else
+              echo "⚠️ $file is missing"
+            fi
+          done
+          
+          echo "📋 Checking Kconfig for SukiSU Ultra options:"
+          if [ -f "$KERNEL_DIR/drivers/kernelsu/Kconfig" ]; then
+            grep -n "SUKISU" $KERNEL_DIR/drivers/kernelsu/Kconfig || echo "❌ No SUKISU options found in Kconfig"
+          fi
+          
+          # Final verification message
+          if [ -f "$KERNEL_DIR/drivers/kernelsu/core.c" ] && [ -f "$KERNEL_DIR/drivers/kernelsu/ksu.h" ]; then
+            echo "✅ VERIFICATION PASSED: Basic SukiSU Ultra files are present"
+          else
+            echo "❌ VERIFICATION FAILED: Critical SukiSU Ultra files are missing"
+            exit 1
+          fi
       - name: Apply SUSFS Patches
         run: |
           # Clone required repositories
