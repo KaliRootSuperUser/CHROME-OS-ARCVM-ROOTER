@@ -494,32 +494,18 @@ jobs:
       - name: Verify KernelSU Integration
         working-directory: kernel
         run: |
-          echo "🔍 Verifying KernelSU integration in final kernel image..."
+          echo "🔍 Verifying KernelSU integration in kernel..."
           KERNEL_IMAGE="arch/${ARCH}/boot/${KERNEL_IMAGE_NAME}"
           
-          # Check if KernelSU symbols are in the kernel using nm 
-          echo "🔍 Checking for KSU symbols in kernel image:"
-          nm ${KERNEL_IMAGE} 2>/dev/null | grep -i "ksu" || echo "⚠️ No KSU symbols found with nm"
-          
-          # Try to extract built-in config and check for KernelSU settings
-          echo "🔍 Extracting built-in kernel config (if available):"
-          if [ -f "./scripts/extract-ikconfig" ]; then
-            ./scripts/extract-ikconfig ${KERNEL_IMAGE} > extracted_config.txt
-            if [ -s "extracted_config.txt" ]; then
-              echo "🔍 KernelSU configurations in built-in config:"
-              grep -E "CONFIG_KSU|CONFIG_SUKISU|CONFIG_SUSFS" extracted_config.txt || echo "⚠️ No KSU configs found in built-in config"
-            else
-              echo "⚠️ Could not extract built-in config"
-            fi
-          else
-            echo "⚠️ extract-ikconfig script not found"
+          # Check if kernel image exists
+          if [ ! -f "$KERNEL_IMAGE" ]; then
+            echo "❌ ERROR: Kernel image not found at $KERNEL_IMAGE"
+            exit 1
           fi
           
-          # Check for KernelSU strings in binary
-          echo "🔍 Searching for KernelSU strings in kernel image:"
-          strings ${KERNEL_IMAGE} | grep -i "kernelsu" || echo "⚠️ No KernelSU strings found"
+          echo "✅ Found kernel image: $(ls -lh $KERNEL_IMAGE)"
           
-          # Add detailed report to artifacts
+          # Create verification report
           echo "Creating KernelSU verification report..."
           {
             echo "=== KernelSU Integration Verification Report ==="
@@ -527,12 +513,39 @@ jobs:
             echo "Kernel image: ${KERNEL_IMAGE}"
             echo "Size: $(stat -c%s ${KERNEL_IMAGE}) bytes"
             echo ""
+          
             echo "=== Kernel .config KSU Settings ==="
             grep -E "CONFIG_KSU|CONFIG_SUKISU|CONFIG_SUSFS|CONFIG_KPROBES|CONFIG_KPM" .config || echo "No KSU configs found in .config"
             echo ""
-            echo "=== KernelSU Strings in Binary ==="
-            strings ${KERNEL_IMAGE} | grep -i "ksu\|kernelsu" || echo "No KernelSU strings found in binary"
+          
+            echo "=== Looking for KSU symbols ==="
+            if command -v llvm-nm &> /dev/null; then
+              llvm-nm ${KERNEL_IMAGE} 2>/dev/null | grep -i "ksu" || echo "No KSU symbols found with llvm-nm"
+            else
+              nm -D ${KERNEL_IMAGE} 2>/dev/null | grep -i "ksu" || echo "No KSU symbols found with nm"
+            fi
+            echo ""
+          
+            echo "=== Strings Analysis ==="
+            strings ${KERNEL_IMAGE} | grep -i "kernelsu" || echo "No 'kernelsu' strings found"
+            strings ${KERNEL_IMAGE} | grep -i "ksu_" || echo "No 'ksu_' function prefixes found"
+            echo ""
+          
+            echo "=== Extracting built-in config if possible ==="
+            strings ${KERNEL_IMAGE} | grep -A 1 IKCFG_ST | grep -v IKCFG_ST | strings > extracted_config.txt || true
+            if [ -s "extracted_config.txt" ]; then
+              grep -E "CONFIG_KSU|CONFIG_SUKISU|CONFIG_SUSFS" extracted_config.txt || echo "No KSU configs found in built-in config"
+            else
+              echo "Could not extract built-in config"
+            fi
           } > ksu_verification_report.txt
+          
+          # Show key findings
+          echo "🔍 KernelSU configs in .config:"
+          grep -E "^CONFIG_KSU=|^CONFIG_KSU_SUKISU=" .config || echo "⚠️ KernelSU not enabled in .config!"
+          
+          echo "🔍 Checking for KSU strings in kernel image:"
+          strings ${KERNEL_IMAGE} | grep -i "kernelsu" || echo "⚠️ No 'kernelsu' strings found in binary"
           
           # Copy report to output package
           mkdir -p $GITHUB_WORKSPACE/output/package/
