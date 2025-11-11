@@ -1,4 +1,4 @@
-name: Build Kernel - ChromeOS ARCVM
+name:  ChromeOS ARCVM - SukiSU Kernel
 on:
   push:
     branches: ["main", "ci", "checkci"]
@@ -14,7 +14,7 @@ on:
   workflow_dispatch:
 
 env:
-  git_tag: chromeos-5.10-arcvm
+  git_tag: chromeos-5.10-
   version_tag: v1.2.0-sukisu-enhanced
 
 jobs:
@@ -273,7 +273,7 @@ jobs:
           if [ ! -f "drivers/kernelsu/Kconfig" ]; then
             echo "Creating minimal KernelSU Kconfig:"
             mkdir -p drivers/kernelsu
-            cat > drivers/kernelsu/Kconfig << 'EOF'
+            cat > drivers/kernelsu/Kconfig << EOF
           config KSU
           tristate "Enable KernelSU support"
           depends on !GENERIC_KERNEL_EXECVE
@@ -290,16 +290,17 @@ jobs:
           # IMPORTANT: Save original config for comparison
           cp .config .config.original
           
-          # Add known dependencies required by KernelSU
-          echo "🔧 Adding core kernel dependencies..."
+          # Create a new file with all our config settings
+          echo "🔧 Adding KernelSU and SUSFS configurations..."
+          
+          # Core kernel dependencies required by KernelSU
           echo "CONFIG_MODULES=y" >> .config
           echo "CONFIG_KALLSYMS=y" >> .config
           echo "CONFIG_HAVE_SYSCALL_TRACEPOINTS=y" >> .config
           echo "CONFIG_KALLSYMS_ALL=y" >> .config
           echo "CONFIG_MODULE_UNLOAD=y" >> .config
           
-          # Now add KernelSU and SUSFS configurations
-          echo "🔧 Adding KernelSU and SUSFS configurations..."
+          # KernelSU configurations
           echo "CONFIG_KSU=y" >> .config
           echo "CONFIG_KSU_FS=y" >> .config
           echo "CONFIG_KSU_ALLOWLIST=y" >> .config
@@ -315,6 +316,8 @@ jobs:
           echo "CONFIG_KSU_ALLOWLIST_INIT=y" >> .config
           echo "CONFIG_KSU_GET_ROOT_PROFILE=y" >> .config
           echo "CONFIG_KSU_MANUAL_HOOK=y" >> .config
+          
+          # SUSFS configurations
           echo "CONFIG_KSU_SUSFS=y" >> .config
           echo "CONFIG_KSU_SUSFS_HAS_MAGIC_MOUNT=y" >> .config
           echo "CONFIG_KSU_SUSFS_SUS_PATH=y" >> .config
@@ -328,6 +331,8 @@ jobs:
           echo "CONFIG_KSU_SUSFS_HIDE_KSU_SUSFS_SYMBOLS=y" >> .config
           echo "CONFIG_KSU_SUSFS_SPOOF_CMDLINE_OR_BOOTCONFIG=y" >> .config
           echo "CONFIG_KSU_SUSFS_OPEN_REDIRECT=y" >> .config
+          
+          # ZRAM and compression configurations
           echo "CONFIG_ZSMALLOC=y" >> .config
           echo "CONFIG_ZRAM=y" >> .config
           echo "CONFIG_CRYPTO_LZ4HC=y" >> .config
@@ -336,6 +341,9 @@ jobs:
           echo "CONFIG_CRYPTO_842=y" >> .config
           echo "CONFIG_ZRAM_DEF_COMP_LZ4KD=y" >> .config
           echo "CONFIG_ZRAM_WRITEBACK=y" >> .config
+          
+          # Build optimizations
+          echo "CONFIG_CCACHE=y" >> .config
           
           # CRITICAL: Merge the configs using oldconfig (this ensures dependencies are resolved)
           echo "🔧 Merging configurations with oldconfig..."
@@ -351,7 +359,6 @@ jobs:
           grep KSU .config | head -5
           
           # Configure ccache for kernel build
-          echo "CONFIG_CCACHE=y" >> .config
           echo "KBUILD_COMPILER_LAUNCHER := ccache" >> Makefile
           
           # Apply additional fixes for common build errors
@@ -364,82 +371,6 @@ jobs:
           echo "#define CONFIG_KSU 1" >> include/generated/autoconf.h
           echo "#define CONFIG_KPM 1" >> include/generated/autoconf.h
           echo "#define CONFIG_KSU_MANUAL_HOOK 1" >> include/generated/autoconf.h
-
-      - name: Ensure KernelSU + Sukisu + SUSFS Configs
-        working-directory: kernel
-        run: |
-          echo "🔧 Orchestrating Kernel config flags - Enhanced Version..."
-
-          CONFIG_FLAGS=(
-            CONFIG_KSU
-            CONFIG_KSU_FS
-            CONFIG_KSU_ALLOWLIST
-            CONFIG_KSU_SUKISU
-            CONFIG_KSU_DEBUG
-            CONFIG_KPROBES
-            CONFIG_KPM
-            CONFIG_KSU_SUPERCALLS
-            CONFIG_KSU_ENFORCE
-            CONFIG_KSU_PERMISSIVE
-            CONFIG_KSU_CORE_INIT
-            CONFIG_KSU_KSUD_INIT
-            CONFIG_KSU_ALLOWLIST_INIT
-            CONFIG_KSU_GET_ROOT_PROFILE
-            CONFIG_KSU_MANUAL_HOOK
-            CONFIG_KSU_SUSFS
-            CONFIG_KSU_SUSFS_HAS_MAGIC_MOUNT
-            CONFIG_KSU_SUSFS_SUS_PATH
-            CONFIG_KSU_SUSFS_SUS_MOUNT
-            CONFIG_KSU_SUSFS_AUTO_ADD_SUS_KSU_DEFAULT_MOUNT
-            CONFIG_KSU_SUSFS_AUTO_ADD_SUS_BIND_MOUNT
-            CONFIG_KSU_SUSFS_SUS_KSTAT
-            CONFIG_KSU_SUSFS_TRY_UMOUNT
-            CONFIG_KSU_SUSFS_SPOOF_UNAME
-            CONFIG_KSU_SUSFS_ENABLE_LOG
-            CONFIG_KSU_SUSFS_HIDE_KSU_SUSFS_SYMBOLS
-            CONFIG_KSU_SUSFS_SPOOF_CMDLINE_OR_BOOTCONFIG
-            CONFIG_KSU_SUSFS_OPEN_REDIRECT
-            CONFIG_ZSMALLOC
-            CONFIG_ZRAM
-            CONFIG_CRYPTO_LZ4HC
-            CONFIG_CRYPTO_LZ4K
-            CONFIG_CRYPTO_LZ4KD
-            CONFIG_CRYPTO_842
-            CONFIG_ZRAM_DEF_COMP_LZ4KD
-            CONFIG_ZRAM_WRITEBACK
-          )
-
-          # ensure .config exists
-          touch .config
-
-          for FLAG in "${CONFIG_FLAGS[@]}"; do
-            # Check if config exists
-            if grep -q "^${FLAG}=y" .config; then
-              echo "✅ ${FLAG} already enabled"
-            elif grep -q "^${FLAG}=n" .config; then
-              echo "⚙️ ${FLAG} found but disabled → enabling"
-              sed -i "s/^${FLAG}=n/${FLAG}=y/" .config
-            else
-              echo "➕ Adding ${FLAG}=y"
-              echo "${FLAG}=y" >> .config
-            fi
-          
-            # Also ensure it's defined in the autoconf.h file for header checks
-            # Convert CONFIG_XXX to #define CONFIG_XXX 1
-            mkdir -p include/generated
-            if ! grep -q "#define ${FLAG} 1" include/generated/autoconf.h; then
-              echo "#define ${FLAG} 1" >> include/generated/autoconf.h
-            fi
-          done
-          
-          # Create a backup of the final config
-          cp .config .config.backup
-          
-          echo ""
-          echo "✅ Kernel config orchestration complete with enhanced settings."
-          echo "🔍 Preview of all KernelSU/Sukisu settings:"
-          grep -E "KSU|SUSFS|SUKISU|KPM" .config || echo "⚠️ No KernelSU-related entries found!"
-
       - name: Setup tmate session for manual config
         uses: mxschmitt/action-tmate@v3
         with:
