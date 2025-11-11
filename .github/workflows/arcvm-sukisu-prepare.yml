@@ -13,7 +13,7 @@ on:
   workflow_dispatch:
 
 env:
-  git_tag: chromeos-5.10-
+  git_tag: chromeos-5.10-arcvm
   version_tag: v1.2.0-sukisu-enhanced
   KERNEL_CONFIG_ARTIFACT: kernel-config-files
   KERNEL_SOURCE_ARTIFACT: kernel-source-files
