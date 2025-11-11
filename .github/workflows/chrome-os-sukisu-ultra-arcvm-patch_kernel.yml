@@ -371,11 +371,7 @@ jobs:
           echo "#define CONFIG_KSU 1" >> include/generated/autoconf.h
           echo "#define CONFIG_KPM 1" >> include/generated/autoconf.h
           echo "#define CONFIG_KSU_MANUAL_HOOK 1" >> include/generated/autoconf.h
-      - name: Setup tmate session for manual config
-        uses: mxschmitt/action-tmate@v3
-        with:
-          limit-access-to-actor: true # Optional: Restricts access to your GitHub user only
-
+      
       - name: Build Kernel
         working-directory: kernel
         env:
