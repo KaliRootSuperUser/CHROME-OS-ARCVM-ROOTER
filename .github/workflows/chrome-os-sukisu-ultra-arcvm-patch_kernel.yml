@@ -493,12 +493,24 @@ jobs:
 
       - name: Verify KernelSU Integration
         working-directory: kernel
+        env:
+          KERNEL_IMAGE_NAME: ${{ matrix.kernel_image_name }}
+          ARCH: ${{ matrix.arch }}
         run: |
           echo "🔍 Verifying KernelSU integration in kernel..."
           KERNEL_IMAGE="arch/${ARCH}/boot/${KERNEL_IMAGE_NAME}"
           
           # Check if kernel image exists
           if [ ! -f "$KERNEL_IMAGE" ]; then
+            echo "DEBUG: Current directory: $(pwd)"
+            echo "DEBUG: ARCH=$ARCH, KERNEL_IMAGE_NAME=$KERNEL_IMAGE_NAME"
+            echo "DEBUG: Looking for image at $KERNEL_IMAGE"
+            echo "DEBUG: Listing arch directory contents:"
+            ls -la arch/ || echo "arch/ directory not found"
+            if [ -d "arch/${ARCH}" ]; then
+              echo "DEBUG: Listing arch/${ARCH}/boot contents:"
+              ls -la arch/${ARCH}/boot/ || echo "boot directory not found"
+            fi
             echo "❌ ERROR: Kernel image not found at $KERNEL_IMAGE"
             exit 1
           fi
