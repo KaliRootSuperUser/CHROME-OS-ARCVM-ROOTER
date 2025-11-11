@@ -14,7 +14,7 @@ on:
   workflow_dispatch:
 
 env:
-  git_tag: chromeos-5.10-
+  git_tag: chromeos-5.10-arcvm
   version_tag: v1.2.0-sukisu-enhanced
 
 jobs:
