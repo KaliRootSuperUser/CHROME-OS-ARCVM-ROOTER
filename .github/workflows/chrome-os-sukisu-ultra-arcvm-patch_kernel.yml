@@ -283,11 +283,23 @@ jobs:
           EOF
           fi
           
-          # Then run the defconfig
-          make ARCH=$ARCH ${{ matrix.defconfig }}
+          # IMPORTANT: First run the defconfig to create base .config
+          echo "🔧 Applying defconfig ${{ matrix.defconfig }}..."
+          make ARCH=$ARCH ${{ matrix.defconfig }} 
           
-          # Initial kernel config using echo commands for KernelSU and SUSFS
-          # All required flags from both snippets - ENHANCED VERSION
+          # IMPORTANT: Save original config for comparison
+          cp .config .config.original
+          
+          # Add known dependencies required by KernelSU
+          echo "🔧 Adding core kernel dependencies..."
+          echo "CONFIG_MODULES=y" >> .config
+          echo "CONFIG_KALLSYMS=y" >> .config
+          echo "CONFIG_HAVE_SYSCALL_TRACEPOINTS=y" >> .config
+          echo "CONFIG_KALLSYMS_ALL=y" >> .config
+          echo "CONFIG_MODULE_UNLOAD=y" >> .config
+          
+          # Now add KernelSU and SUSFS configurations
+          echo "🔧 Adding KernelSU and SUSFS configurations..."
           echo "CONFIG_KSU=y" >> .config
           echo "CONFIG_KSU_FS=y" >> .config
           echo "CONFIG_KSU_ALLOWLIST=y" >> .config
@@ -325,8 +337,17 @@ jobs:
           echo "CONFIG_ZRAM_DEF_COMP_LZ4KD=y" >> .config
           echo "CONFIG_ZRAM_WRITEBACK=y" >> .config
           
+          # CRITICAL: Merge the configs using oldconfig (this ensures dependencies are resolved)
+          echo "🔧 Merging configurations with oldconfig..."
+          yes "" | make ARCH=$ARCH oldconfig
+          
           # Remove -dirty suffix from kernel version
           sed -i 's/ -dirty//g' scripts/setlocalversion
+          
+          # Compare original and new config to see what changed
+          echo "🔍 Configuration changes made:"
+          diff -U0 .config.original .config | grep -E "^\+CONFIG_(KSU|SUSFS|KPROBES|KPM)" || echo "No expected changes found!"
+          
           grep KSU .config | head -5
           
           # Configure ccache for kernel build
@@ -439,20 +460,84 @@ jobs:
           # Skip mrproper to preserve the kernel configuration
           # make LLVM=1 LLVM_IAS=1 DEPMOD=depmod DTC=dtc O=${PWD} mrproper
           
-          # Apply the defconfig
-          make LLVM=1 LLVM_IAS=1 DEPMOD=depmod DTC=dtc O=${PWD} ${DEFCONFIG} < /dev/null
+          # IMPORTANT: DO NOT reapply the defconfig here - it would overwrite our KernelSU configs
+          # Instead, verify our configs are still present
+          echo "🔍 Verifying KernelSU configurations before build:"
+          grep -E "CONFIG_KSU=|CONFIG_KSU_SUKISU=" .config
           
           # Enable LTO options
-          scripts/config --file .config -e LTO_CLANG -d LTO_NONE -e LTO_CLANG_THIN -d LTO_CLANG_FULL -e THINLTO
+          echo "🔧 Configuring LTO settings..."
+          if [ "${{ github.event.inputs.DISABLE_LTO }}" == "true" ]; then
+            echo "🔧 Disabling LTO for better debugging..."
+            scripts/config --file .config -d LTO_CLANG -e LTO_NONE -d LTO_CLANG_THIN -d LTO_CLANG_FULL -d THINLTO
+          else
+            echo "🔧 Enabling LTO for performance..."
+            scripts/config --file .config -e LTO_CLANG -d LTO_NONE -e LTO_CLANG_THIN -d LTO_CLANG_FULL -e THINLTO
+          fi
           
-          # Build the kernel
-          make LLVM=1 LLVM_IAS=1 DEPMOD=depmod DTC=dtc O=${PWD} -j$(nproc) ${KERNEL_IMAGE_NAME} modules prepare-objtool
+          # Build with verbose output to catch errors
+          echo "🔧 Building kernel with KernelSU integration..."
+          make LLVM=1 LLVM_IAS=1 DEPMOD=depmod DTC=dtc O=${PWD} -j$(nproc) ${KERNEL_IMAGE_NAME} V=1 modules prepare-objtool
+          
+          # Make sure the kernel image was built successfully
+          if [ ! -f "arch/${ARCH}/boot/${KERNEL_IMAGE_NAME}" ]; then
+            echo "❌ Kernel build failed - image not found!"
+            exit 1
+          fi
           
           # List the built kernel image
           ls -l -h ${PWD}/arch/${ARCH}/boot
           
           # Set the file path for artifact upload
           echo "file_path=${PWD}/arch/${ARCH}/boot/${KERNEL_IMAGE_NAME}" >> $GITHUB_ENV
+
+      - name: Verify KernelSU Integration
+        working-directory: kernel
+        run: |
+          echo "🔍 Verifying KernelSU integration in final kernel image..."
+          KERNEL_IMAGE="arch/${ARCH}/boot/${KERNEL_IMAGE_NAME}"
+          
+          # Check if KernelSU symbols are in the kernel using nm 
+          echo "🔍 Checking for KSU symbols in kernel image:"
+          nm ${KERNEL_IMAGE} 2>/dev/null | grep -i "ksu" || echo "⚠️ No KSU symbols found with nm"
+          
+          # Try to extract built-in config and check for KernelSU settings
+          echo "🔍 Extracting built-in kernel config (if available):"
+          if [ -f "./scripts/extract-ikconfig" ]; then
+            ./scripts/extract-ikconfig ${KERNEL_IMAGE} > extracted_config.txt
+            if [ -s "extracted_config.txt" ]; then
+              echo "🔍 KernelSU configurations in built-in config:"
+              grep -E "CONFIG_KSU|CONFIG_SUKISU|CONFIG_SUSFS" extracted_config.txt || echo "⚠️ No KSU configs found in built-in config"
+            else
+              echo "⚠️ Could not extract built-in config"
+            fi
+          else
+            echo "⚠️ extract-ikconfig script not found"
+          fi
+          
+          # Check for KernelSU strings in binary
+          echo "🔍 Searching for KernelSU strings in kernel image:"
+          strings ${KERNEL_IMAGE} | grep -i "kernelsu" || echo "⚠️ No KernelSU strings found"
+          
+          # Add detailed report to artifacts
+          echo "Creating KernelSU verification report..."
+          {
+            echo "=== KernelSU Integration Verification Report ==="
+            echo "Date: $(date)"
+            echo "Kernel image: ${KERNEL_IMAGE}"
+            echo "Size: $(stat -c%s ${KERNEL_IMAGE}) bytes"
+            echo ""
+            echo "=== Kernel .config KSU Settings ==="
+            grep -E "CONFIG_KSU|CONFIG_SUKISU|CONFIG_SUSFS|CONFIG_KPROBES|CONFIG_KPM" .config || echo "No KSU configs found in .config"
+            echo ""
+            echo "=== KernelSU Strings in Binary ==="
+            strings ${KERNEL_IMAGE} | grep -i "ksu\|kernelsu" || echo "No KernelSU strings found in binary"
+          } > ksu_verification_report.txt
+          
+          # Copy report to output package
+          mkdir -p $GITHUB_WORKSPACE/output/package/
+          cp ksu_verification_report.txt $GITHUB_WORKSPACE/output/package/
+
       - name: Pack Source Tree
         id: pack_source
         run: |
