@@ -26,10 +26,10 @@ jobs:
     strategy:
       matrix:
         include:
-          - arch: arm64
+          - arch: x86_64
             defconfig: defconfig
             kernel_image_name: Image.lz4
-            build_config: arch/arm64/configs/defconfig
+            build_config: arch/x86_64/configs/defconfig
     env:
       LTO: thin
       ROOT_DIR: /
