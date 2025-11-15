@@ -1,4 +1,4 @@
-name:  ARCVM SukiSU Kernel Build
+name:  ChromeOS ARCVM - SukiSU Kernel
 on:
   push:
     branches: ["main", "ci", "checkci"]
@@ -287,8 +287,15 @@ jobs:
           echo "🔧 Regenerating defconfigs with KernelSU options..."
           DEFCONFIGS_TO_UPDATE="gki_defconfig x86_64_defconfig x86_64_arcvm_defconfig"
 
+          # Set the correct architecture path (x86 for x86_64)
+          if [ "$ARCH" == "x86_64" ]; then
+            ARCH_PATH="x86"
+          else
+            ARCH_PATH="$ARCH"
+          fi
+
           for defconfig in $DEFCONFIGS_TO_UPDATE; do
-            echo "Processing arch/$ARCH/configs/$defconfig..."
+            echo "Processing arch/$ARCH_PATH/configs/$defconfig..."
             make ARCH=$ARCH "$defconfig"
 
             echo "Adding KernelSU and SUSFS configurations..."
@@ -315,8 +322,8 @@ jobs:
 
             echo "Saving updated defconfig..."
             make ARCH=$ARCH savedefconfig
-            mv -v defconfig "arch/$ARCH/configs/$defconfig"
-            echo "✅ Updated arch/$ARCH/configs/$defconfig"
+            mv -v defconfig "arch/$ARCH_PATH/configs/$defconfig"
+            echo "✅ Updated arch/$ARCH_PATH/configs/$defconfig"
           done
 
           # IMPORTANT: Now, re-apply the configuration for the current build matrix
