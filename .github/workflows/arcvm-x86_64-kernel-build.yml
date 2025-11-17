@@ -482,7 +482,7 @@ jobs:
       - name:  Inject KSU/SUKISU/SUSFS Config Settings  - 'kernel/arch/x86/configs/x86_64_arcvm_defconfig'
         working-directory: kernel
         run: |
-          cat << 'EOF' >> arch/x86/configs/x86_64_arcvm_defconfig'
+          cat << 'EOF' >> arch/x86/configs/x86_64_arcvm_defconfig
 
           # --- Manual KSU/SUSFS Configuration Injection ---
           
@@ -548,7 +548,7 @@ jobs:
       - name:  Inject KSU/SUKISU/SUSFS Config Settings  - 'kernel/arch/x86/configs/x86_64_defconfig'
         working-directory: kernel
         run: |
-          cat << 'EOF' >> arch/x86/configs/x86_64_defconfig'
+          cat << 'EOF' >> arch/x86/configs/x86_64_defconfig
 
           # --- Manual KSU/SUSFS Configuration Injection ---
           
