@@ -391,7 +391,7 @@ jobs:
           echo "Downloading SUSFS headers from GitLab..."
           wget -O "$KERNEL_DIR/include/linux/susfs_def.h" "https://gitlab.com/simonpunk/susfs4ksu/-/raw/gki-android13-5.10/kernel_patches/include/linux/susfs_def.h"
           wget -O "$KERNEL_DIR/include/linux/susfs.h" "https://gitlab.com/simonpunk/susfs4ksu/-/raw/gki-android13-5.10/kernel_patches/include/linux/susfs.h"
-          wget -O "$KERNEL_DIR/include/linux/sus_su.h" "https://github.com/KaliRootSuperUser/SUSFS4KSU-ARCVM/blob/main/kernel_patches/include/linux/sus_su.h"
+          wget -O "$KERNEL_DIR/include/linux/sus_su.h" "https://github.com/KaliRootSuperUser/SUSFS4KSU-ARCVM/raw/main/kernel_patches/include/linux/sus_su.h"
           
           # Also copy from local clone as backup
           if [ -d "$GITHUB_WORKSPACE/susfs/kernel_patches/include" ]; then
@@ -796,6 +796,26 @@ jobs:
         run: |
           echo "📦 Configuring kprobes support for KernelSU without duplicating code"
 
+          # First, enable kprobes configs - this is safe to do
+          touch .config
+          echo "CONFIG_KPROBES=y" >> .config
+          echo "CONFIG_HAVE_KPROBES=y" >> .config
+          echo "CONFIG_KPROBE_EVENTS=y" >> .config
+          echo "CONFIG_ARCH_SUPPORTS_KPROBES=y" >> .config
+          echo "CONFIG_KRETPROBES=y" >> .config
+
+          # Create/update autoconf.h with kprobes definitions
+          mkdir -p include/generated
+          if [ ! -f "include/generated/autoconf.h" ]; then
+            touch include/generated/autoconf.h
+            echo "#define CONFIG_KPROBES 1" >> include/generated/autoconf.h
+            echo "#define CONFIG_HAVE_KPROBES 1" >> include/generated/autoconf.h
+            echo "#define CONFIG_KPROBE_EVENTS 1" >> include/generated/autoconf.h
+            echo "#define CONFIG_KRETPROBES 1" >> include/generated/autoconf.h
+            echo "#define CONFIG_KSU 1" >> include/generated/autoconf.h
+            echo "#define CONFIG_KSU_SUSFS 1" >> include/generated/autoconf.h
+          fi
+
           # IMPORTANT: Instead of creating our own kprobes implementation,
           # let's check if the kernel already has one and use that
           echo "Checking for existing kprobes implementation..."
@@ -829,6 +849,16 @@ jobs:
         env:
           ARCH: ${{ matrix.arch }}
         run: |
+          # verification before building:
+          echo "=== Final Config Check ==="
+          grep -E 'CONFIG_KSU|CONFIG_KPROBES|CONFIG_SUSFS' .config
+          echo "========================="
+          
+          # Symbol check for kprobes:
+          if ! grep -q 'CONFIG_KPROBES=y' .config; then
+           echo "❌ Critical error: KPROBES not enabled!"
+           exit 1
+          fi
           # Check for KernelSU Kconfig before running defconfig
           echo "Checking KernelSU Kconfig file:"
           ls -la drivers/kernelsu/Kconfig
@@ -915,6 +945,12 @@ jobs:
           echo "#define CONFIG_KSU 1" >> include/generated/autoconf.h
           echo "#define CONFIG_KPM 1" >> include/generated/autoconf.h
           echo "#define CONFIG_KSU_MANUAL_HOOK 1" >> include/generated/autoconf.h
+          
+      - name: Debug Kernel Headers
+        run: |
+          echo "=== SUSFS Header Contents ===" 
+          head -n 20 $KERNEL_DIR/include/linux/susfs*
+          echo "=============================="      
 
       - name: Build Kernel
         working-directory: kernel
@@ -956,6 +992,9 @@ jobs:
           # Build with verbose output to catch errors
           echo "🔧 Building kernel with KernelSU integration..."
           make LLVM=1 LLVM_IAS=1 DEPMOD=depmod DTC=dtc O=${PWD} -j$(nproc) ${KERNEL_IMAGE_NAME} V=1 modules prepare-objtool
+            W=1 \  # Enable extra warnings
+            KCFLAGS="-Wno-error=address-of-packed-member -Wno-error=unused-function"
+            
           
           # Make sure the kernel image was built successfully
           if [ ! -f "arch/${ARCH}/boot/${KERNEL_IMAGE_NAME}" ]; then
