@@ -360,25 +360,39 @@ jobs:
           grep -n kernelsu $KERNEL_DIR/drivers/Kconfig
       - name: Apply SUSFS Patches
         run: |
+          set -e # Fail on any error
+          # Add patch verification after application
+          check_patch() {
+            patch -p1 -l -F 10 < "$1" || { echo "❌ Patch failed: $1"; exit 1; }
+            echo "✅ Successfully applied: $1"
+          }
+
           # Clone required repositories
           git clone --depth=1 https://gitlab.com/simonpunk/susfs4ksu.git -b gki-android13-5.10 $GITHUB_WORKSPACE/susfs
           git clone --depth=1 https://github.com/ShirkNeko/SukiSU_patch.git $GITHUB_WORKSPACE/SukiSU_patch
           
           cd $KERNEL_DIR
-          # Apply SUSFS patch
+
+          # Copy patches into the kernel directory
           cp $GITHUB_WORKSPACE/susfs/kernel_patches/50_add_susfs_in_gki-android13-5.10.patch .
-          patch -p1 < 50_add_susfs_in_gki-android13-5.10.patch || true
-          
-          # Apply SukiSU patches
           cp $GITHUB_WORKSPACE/SukiSU_patch/69_hide_stuff.patch .
-          patch -p1 -F3 < 69_hide_stuff.patch || true
           cp $GITHUB_WORKSPACE/SukiSU_patch/hooks/syscall_hooks.patch .
-          patch -p1 -F3 < syscall_hooks.patch || true
+
+          # Apply patches with a generous fuzz factor and verification
+          check_patch 50_add_susfs_in_gki-android13-5.10.patch
+          check_patch 69_hide_stuff.patch
+          check_patch syscall_hooks.patch
+          
+          # Add missing Kconfig dependencies required by the patches
+          echo "Adding missing Kconfig dependencies..."
+          echo "CONFIG_ARCH_SUPPORTS_DEBUG_PAGEALLOC=y" >> .config
+          echo "CONFIG_HAVE_ARCH_TRANSPARENT_HUGEPAGE=y" >> .config
           
           # Apply ZRAM LZ4KD patches if needed
           if [[ "${{ github.event.inputs.ZRAM_LZ4KD }}" == "true" ]]; then
             cp -r $GITHUB_WORKSPACE/SukiSU_patch/other/zram/lz4k/* .
-            cp $GITHUB_WORKSPACE/SukiSU_patch/other/zram/zram_patch/5.10/lz4kd.patch . && patch -p1 < lz4kd.patch || true
+            cp $GITHUB_WORKSPACE/SukiSU_patch/other/zram/zram_patch/5.10/lz4kd.patch .
+            patch -p1 < lz4kd.patch
           fi
           
           git status --short
@@ -849,103 +863,58 @@ jobs:
         env:
           ARCH: ${{ matrix.arch }}
         run: |
-          # verification before building:
-          echo "=== Final Config Check ==="
-          grep -E 'CONFIG_KSU|CONFIG_KPROBES|CONFIG_SUSFS' .config
-          echo "========================="
+          # Exit immediately if a command exits with a non-zero status.
+          set -ex
+
+          # Function to validate critical kernel configurations are enabled.
+          validate_config() {
+            echo "=== Validating Kernel Configuration ==="
+            if ! grep -q 'CONFIG_KSU=y' .config; then
+              echo "❌ Missing KernelSU config! (CONFIG_KSU=y)"
+              exit 1
+            fi
+            if ! grep -q 'CONFIG_KSU_SUSFS=y' .config; then
+              echo "❌ Missing SUSFS config! (CONFIG_KSU_SUSFS=y)"
+              exit 1
+            fi
+            echo "✅ KernelSU and SUSFS configurations are present."
+            echo "======================================"
+          }
           
-          # Symbol check for kprobes:
-          if ! grep -q 'CONFIG_KPROBES=y' .config; then
-           echo "❌ Critical error: KPROBES not enabled!"
-           exit 1
-          fi
-          # Check for KernelSU Kconfig before running defconfig
-          echo "Checking KernelSU Kconfig file:"
-          ls -la drivers/kernelsu/Kconfig
-          
-          # Create minimal KernelSU Kconfig if it doesn't exist
-          if [ ! -f "drivers/kernelsu/Kconfig" ]; then
-            echo "Creating minimal KernelSU Kconfig:"
-            mkdir -p drivers/kernelsu
-            cat > drivers/kernelsu/Kconfig << EOF
-          config KSU
-          tristate "Enable KernelSU support"
-          depends on !GENERIC_KERNEL_EXECVE
-          default n
-          help
-          Enable KernelSU for kernel-level root capabilities.
-          EOF
-          fi
-          
-          # Regenerate target defconfigs with KSU options
-          echo "🔧 Regenerating defconfigs with KernelSU options..."
-          DEFCONFIGS_TO_UPDATE="gki_defconfig x86_64_defconfig x86_64_arcvm_defconfig"
-
-          # Set the correct architecture path (x86 for x86_64)
-          if [ "$ARCH" == "x86_64" ]; then
-            ARCH_PATH="x86"
-          else
-            ARCH_PATH="$ARCH"
-          fi
-
-          for defconfig in $DEFCONFIGS_TO_UPDATE; do
-            echo "Processing arch/$ARCH_PATH/configs/$defconfig..."
-            make ARCH=$ARCH "$defconfig"
-
-            echo "Adding KernelSU and SUSFS configurations..."
-            scripts/config --file .config \
-              --enable MODULES --enable KALLSYMS --enable HAVE_SYSCALL_TRACEPOINTS \
-              --enable KALLSYMS_ALL --enable MODULE_UNLOAD --enable KSU \
-              --enable KSU_FS --enable KSU_ALLOWLIST --enable KSU_SUKISU \
-              --enable KSU_DEBUG --enable KPROBES --enable KPM \
-              --enable KSU_SUPERCALLS --enable KSU_ENFORCE --enable KSU_PERMISSIVE \
-              --enable KSU_CORE_INIT --enable KSU_KSUD_INIT --enable KSU_ALLOWLIST_INIT \
-              --enable KSU_GET_ROOT_PROFILE --enable KSU_MANUAL_HOOK --enable KSU_SUSFS \
-              --enable KSU_SUSFS_HAS_MAGIC_MOUNT --enable KSU_SUSFS_SUS_PATH \
-              --enable KSU_SUSFS_SUS_MOUNT --enable KSU_SUSFS_AUTO_ADD_SUS_KSU_DEFAULT_MOUNT \
-              --enable KSU_SUSFS_AUTO_ADD_SUS_BIND_MOUNT --enable KSU_SUSFS_SUS_KSTAT \
-              --enable KSU_SUSFS_TRY_UMOUNT --enable KSU_SUSFS_SPOOF_UNAME \
-              --enable KSU_SUSFS_ENABLE_LOG --enable KSU_SUSFS_HIDE_KSU_SUSFS_SYMBOLS \
-              --enable KSU_SUSFS_SPOOF_CMDLINE_OR_BOOTCONFIG --enable KSU_SUSFS_OPEN_REDIRECT \
-              --enable ZSMALLOC --enable ZRAM --enable CRYPTO_LZ4HC --enable CRYPTO_LZ4K \
-              --enable CRYPTO_LZ4KD --enable CRYPTO_842 --enable ZRAM_DEF_COMP_LZ4KD \
-              --enable ZRAM_WRITEBACK
-
-            echo "Merging configurations with olddefconfig..."
-            make ARCH=$ARCH olddefconfig
-
-            echo "Saving updated defconfig..."
-            make ARCH=$ARCH savedefconfig
-            mv -v defconfig "arch/$ARCH_PATH/configs/$defconfig"
-            echo "✅ Updated arch/$ARCH_PATH/configs/$defconfig"
-          done
-
-          # IMPORTANT: Now, re-apply the configuration for the current build matrix
-          # to ensure the .config file is correct for the build.
-          echo "🔧 Applying defconfig for current build: ${{ matrix.defconfig }}..."
+          # Apply the configuration for the current build matrix, which creates the .config file.
           make ARCH=$ARCH ${{ matrix.defconfig }}
+
+          # Verification after .config is created.
+          echo "=== Initial Config Check ==="
+          grep -E 'CONFIG_KSU|CONFIG_KPROBES|CONFIG_KSU_SUSFS' .config
+          echo "========================="
+
+          # Add missing LTO (Link Time Optimization) configuration.
+          scripts/config --file .config \
+              -e LTO_CLANG \
+              -e THINLTO \
+              -d LTO_NONE \
+              -d LTO_CLANG_FULL
           
-          # Remove -dirty suffix from kernel version
+          # Add critical compiler flags required for KSU/SUSFS.
+          echo 'CONFIG_CC_HAS_KASAN_GENERIC=y' >> .config
+          echo 'CONFIG_HAVE_ARCH_KASAN=y' >> .config
+          
+          # Update the .config file with new dependencies and prepare kernel headers.
+          make ARCH=$ARCH olddefconfig prepare
+
+          # Perform a strict validation of the final .config file.
+          validate_config
+          
+          # Remove -dirty suffix from kernel version string.
           sed -i 's/ -dirty//g' scripts/setlocalversion
           
-          # Verify final config
-          echo "🔍 Verifying final config:"
-          grep KSU .config | head -5
-          
-          # Configure ccache for kernel build
+          # Configure ccache to speed up kernel builds.
           echo "KBUILD_COMPILER_LAUNCHER := ccache" >> Makefile
           
-          # Apply additional fixes for common build errors
-          echo "# Fix missing symbols or version mismatches" >> Makefile
-          echo 'KBUILD_CFLAGS += -Wno-error=implicit-function-declaration -Wno-error=incompatible-pointer-types -Wno-error=format -Wno-error -Wno-missing-prototypes -Wno-unused-const-variable' >> Makefile
-          
-          # Ensure CONFIG_KSU_SUSFS is properly defined in autoconf.h for header checks
-          mkdir -p include/generated
-          echo "#define CONFIG_KSU_SUSFS 1" >> include/generated/autoconf.h
-          echo "#define CONFIG_KSU 1" >> include/generated/autoconf.h
-          echo "#define CONFIG_KPM 1" >> include/generated/autoconf.h
-          echo "#define CONFIG_KSU_MANUAL_HOOK 1" >> include/generated/autoconf.h
-
+          # Remove problematic error suppression flags from the Makefile to ensure build errors are surfaced.
+          sed -i '/Wno-error=implicit-function-declaration/d' Makefile
+          sed -i '/Wno-error=incompatible-pointer-types/d' Makefile
       - name: Debug Kernel Headers
         run: |
           echo "=== SUSFS Header Contents ===" 
@@ -958,17 +927,62 @@ jobs:
           KERNEL_IMAGE_NAME: ${{ matrix.kernel_image_name }}
           ARCH: ${{ matrix.arch }}
         run: |
+          # Exit on error, print commands, and fail pipelines on first error
+          set -exo pipefail
+
+          # This function is executed on any script exit, success or failure.
+          # It analyzes the build log for errors if the build command failed.
+          post_build() {
+            # Check the exit code of the `make` command in the pipeline
+            if [ ${PIPESTATUS[0]} -ne 0 ]; then
+              echo " "
+              echo "!!!!!!!!!!!!!!!!!!!!!!!!!!!!"
+              echo "=== BUILD FAILURE ANALYSIS ==="
+              echo "!!!!!!!!!!!!!!!!!!!!!!!!!!!!"
+              echo "Summary of errors and warnings:"
+              grep -iE 'error:|warning:' build.log | sort | uniq -c
+              echo "!!!!!!!!!!!!!!!!!!!!!!!!!!!!"
+              exit 1
+            fi
+          }
+          # Register the post_build function to run on EXIT
+          trap post_build EXIT
+
+          # Source the build configuration file and export its variables
           set -a && . ${{ matrix.build_config }}; set +a
+
+          # Set the defconfig from the matrix
           export DEFCONFIG=${{ matrix.defconfig }}
-          if [ ! -z ${{ vars.EXPECTED_SIZE }} ] && [ ! -z ${{ vars.EXPECTED_HASH }} ]; then
+
+          # Set KernelSU expected size and hash if provided from repo variables
+          if [ ! -z "${{ vars.EXPECTED_SIZE }}" ] && [ ! -z "${{ vars.EXPECTED_HASH }}" ]; then
             export KSU_EXPECTED_SIZE=${{ vars.EXPECTED_SIZE }}
             export KSU_EXPECTED_HASH=${{ vars.EXPECTED_HASH }}
           fi
+          
+          # Clean the kernel source tree completely
           make LLVM=1 LLVM_IAS=1 DEPMOD=depmod DTC=dtc O=${PWD} mrproper
-          make LLVM=1 LLVM_IAS=1 DEPMOD=depmod DTC=dtc O=${PWD} ${DEFCONFIG} < /dev/null
-          scripts/config --file .config -e LTO_CLANG -d LTO_NONE -e LTO_CLANG_THIN -d LTO_CLANG_FULL -e THINLTO
-          make LLVM=1 LLVM_IAS=1 DEPMOD=depmod DTC=dtc O=${PWD} -j$(nproc) ${KERNEL_IMAGE_NAME} modules prepare-objtool
+          
+          # Apply the default configuration
+          make LLVM=1 LLVM_IAS=1 DEPMOD=depmod DTC=dtc O=${PWD} ${DEFCONFIG}
+          
+          # Prepare scripts and headers required for the kernel and module build
+          make ARCH=$ARCH -j$(nproc) scripts prepare modules_prepare
+          
+          # Build the kernel image and modules with verbose output for better debugging.
+          # KBUILD_* variables are set to ensure a reproducible build.
+          # The output is piped to build.log for later inspection. The trap will handle failures.
+          make V=1 LLVM=1 LLVM_IAS=1 \
+              KBUILD_BUILD_TIMESTAMP='' \
+              KBUILD_BUILD_USER=build \
+              KBUILD_BUILD_HOST=github \
+              -j$(nproc) ${KERNEL_IMAGE_NAME} modules | tee build.log
+          
+          # List the contents of the boot directory to verify build artifacts
           ls -l -h ${PWD}/arch/${ARCH}/boot
+          
+          # Set the path of the built kernel image as a GitHub Actions environment variable
+          # for the next step (artifact upload).
           echo "file_path=${PWD}/arch/${ARCH}/boot/${KERNEL_IMAGE_NAME}" >> $GITHUB_ENV
       - name: Upload kernel-ARCVM-${{ matrix.arch }}-${{ env.version }}
         uses: actions/upload-artifact@v5
