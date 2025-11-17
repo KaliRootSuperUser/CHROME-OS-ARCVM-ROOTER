@@ -416,7 +416,7 @@ jobs:
           
           
           
-      - name: Inject KSU/SUKISU/SUSFS Config Settings into gki_defconfig
+      - name: Inject KSU/SUKISU/SUSFS Config Settings into 'kernel/arch/x86/configs/gki_defconfig'
         working-directory: kernel
         run: |
           cat << 'EOF' >> arch/x86/configs/gki_defconfig
