@@ -952,34 +952,27 @@ jobs:
           head -n 20 $KERNEL_DIR/include/linux/susfs*
           echo "=============================="      
 
-      - name: Build Kernel
+      - name: Build Kernel and Modules
         working-directory: kernel
         env:
           KERNEL_IMAGE_NAME: ${{ matrix.kernel_image_name }}
           ARCH: ${{ matrix.arch }}
         run: |
-          # Check for the build config file before sourcing
+          # Source the build configuration file, which may contain toolchain variables.
           if [ -f "${{ matrix.build_config }}" ]; then
             set -a && . ${{ matrix.build_config }}; set +a
           else
             echo "Build config file ${{ matrix.build_config }} not found. Proceeding without it."
           fi
           
+          # Export the path to the defconfig file for the build environment.
           export DEFCONFIG=${{ matrix.defconfig }}
-          if [ ! -z ${{ vars.EXPECTED_SIZE }} ] && [ ! -z ${{ vars.EXPECTED_HASH }} ]; then
-            export KSU_EXPECTED_SIZE=${{ vars.EXPECTED_SIZE }}
-            export KSU_EXPECTED_HASH=${{ vars.EXPECTED_HASH }}
-          fi
           
-          # Skip mrproper to preserve the kernel configuration
-          # make LLVM=1 LLVM_IAS=1 DEPMOD=depmod DTC=dtc O=${PWD} mrproper
-          
-          # IMPORTANT: DO NOT reapply the defconfig here - it would overwrite our KernelSU configs
-          # Instead, verify our configs are still present
+          # Verify KernelSU configurations before build.
           echo "🔍 Verifying KernelSU configurations before build:"
           grep -E "CONFIG_KSU=|CONFIG_KSU_SUKISU=" .config
           
-          # Enable LTO options
+          # Configure Link Time Optimization (LTO). ThinLTO can improve performance.
           echo "🔧 Configuring LTO settings..."
           if [ "${{ github.event.inputs.DISABLE_LTO }}" == "true" ]; then
             echo "🔧 Disabling LTO for better debugging..."
@@ -989,52 +982,66 @@ jobs:
             scripts/config --file .config -e LTO_CLANG -d LTO_NONE -e LTO_CLANG_THIN -d LTO_CLANG_FULL -e THINLTO
           fi
           
-          # Build with verbose output to catch errors
+          # Main compilation step using all available CPU cores.
           echo "🔧 Building kernel with KernelSU integration..."
-          make LLVM=1 LLVM_IAS=1 DEPMOD=depmod DTC=dtc O=${PWD} -j$(nproc) ${KERNEL_IMAGE_NAME} V=1 modules prepare-objtool \
-            W=1 \  # Enable extra warnings
-            KCFLAGS="-Wno-error=address-of-packed-member -Wno-error=unused-function"
+          make -j$(nproc) \
+            O=${PWD} \
+            LLVM=1 \
+            LLVM_IAS=1 \
+            DEPMOD=depmod \
+            DTC=dtc \
+            V=1 \
+            W=1 \
+            KCFLAGS="-Wno-error=address-of-packed-member -Wno-error=unused-function" \
+            ${KERNEL_IMAGE_NAME} modules prepare-objtool
             
-          
-          # Make sure the kernel image was built successfully
-          if [ ! -f "arch/${ARCH}/boot/${KERNEL_IMAGE_NAME}" ]; then
+          # Verify that the kernel image file was created successfully.
+          KERNEL_IMAGE_PATH="${PWD}/arch/${ARCH}/boot/${KERNEL_IMAGE_NAME}"
+          if [ ! -f "${KERNEL_IMAGE_PATH}" ]; then
             echo "❌ Kernel build failed - image not found!"
             exit 1
           fi
           
-          # List the built kernel image
-          ls -l -h ${PWD}/arch/${ARCH}/boot
+          # List the contents of the output directory for debugging.
+          echo "✅ Kernel build successful. Output file:"
+          ls -l -h "${KERNEL_IMAGE_PATH}"
           
-          # Set the file path for artifact upload
-          echo "file_path=${PWD}/arch/${ARCH}/boot/${KERNEL_IMAGE_NAME}" >> $GITHUB_ENV
+          # Install modules to a staging directory.
+          echo "🔧 Installing kernel modules..."
+          MODULES_INSTALL_DIR="${GITHUB_WORKSPACE}/modules_out"
+          mkdir -p "${MODULES_INSTALL_DIR}"
+          make O=${PWD} LLVM=1 LLVM_IAS=1 INSTALL_MOD_PATH="${MODULES_INSTALL_DIR}" modules_install
+          
+          # Create a tarball of the modules.
+          echo "📦 Packaging kernel modules..."
+          MODULES_TGZ_PATH="${GITHUB_WORKSPACE}/output/kernel-modules.tar.gz"
+          mkdir -p "${GITHUB_WORKSPACE}/output"
+          tar -czf "${MODULES_TGZ_PATH}" -C "${MODULES_INSTALL_DIR}" .
+          echo "✅ Modules packaged successfully:"
+          ls -l -h "${MODULES_TGZ_PATH}"
+          
+          # Save paths to environment variables for subsequent steps.
+          echo "file_path=${KERNEL_IMAGE_PATH}" >> $GITHUB_ENV
+          echo "modules_path=${MODULES_TGZ_PATH}" >> $GITHUB_ENV
 
       - name: Verify KernelSU Integration
         working-directory: kernel
         env:
-          KERNEL_IMAGE_NAME: ${{ matrix.kernel_image_name }}
           ARCH: ${{ matrix.arch }}
         run: |
           echo "🔍 Verifying KernelSU integration in kernel..."
-          KERNEL_IMAGE="arch/${ARCH}/boot/${KERNEL_IMAGE_NAME}"
+          # Use the file_path from the build step directly.
+          KERNEL_IMAGE="${{ env.file_path }}"
           
-          # Check if kernel image exists
+          # Check if kernel image exists.
           if [ ! -f "$KERNEL_IMAGE" ]; then
-            echo "DEBUG: Current directory: $(pwd)"
-            echo "DEBUG: ARCH=$ARCH, KERNEL_IMAGE_NAME=$KERNEL_IMAGE_NAME"
-            echo "DEBUG: Looking for image at $KERNEL_IMAGE"
-            echo "DEBUG: Listing arch directory contents:"
-            ls -la arch/ || echo "arch/ directory not found"
-            if [ -d "arch/${ARCH}" ]; then
-              echo "DEBUG: Listing arch/${ARCH}/boot contents:"
-              ls -la arch/${ARCH}/boot/ || echo "boot directory not found"
-            fi
-            echo "❌ ERROR: Kernel image not found at $KERNEL_IMAGE"
+            echo "❌ ERROR: Kernel image not found at $KERNEL_IMAGE (from env.file_path)"
             exit 1
           fi
           
           echo "✅ Found kernel image: $(ls -lh $KERNEL_IMAGE)"
           
-          # Create verification report
+          # Create verification report with details about the build.
           echo "Creating KernelSU verification report..."
           {
             echo "=== KernelSU Integration Verification Report ==="
@@ -1048,6 +1055,7 @@ jobs:
             echo ""
           
             echo "=== Looking for KSU symbols ==="
+            # Use llvm-nm or nm to find KernelSU symbols in the compiled image.
             if command -v llvm-nm &> /dev/null; then
               llvm-nm ${KERNEL_IMAGE} 2>/dev/null | grep -i "ksu" || echo "No KSU symbols found with llvm-nm"
             else
@@ -1069,48 +1077,59 @@ jobs:
             fi
           } > ksu_verification_report.txt
           
-          # Show key findings
+          # Show key findings in the job log for quick diagnosis.
           echo "🔍 KernelSU configs in .config:"
           grep -E "^CONFIG_KSU=|^CONFIG_KSU_SUKISU=" .config || echo "⚠️ KernelSU not enabled in .config!"
           
           echo "🔍 Checking for KSU strings in kernel image:"
           strings ${KERNEL_IMAGE} | grep -i "kernelsu" || echo "⚠️ No 'kernelsu' strings found in binary"
           
-          # Copy report to output package
+          # Copy report to the packaging directory for inclusion in the final artifact.
           mkdir -p $GITHUB_WORKSPACE/output/package/
           cp ksu_verification_report.txt $GITHUB_WORKSPACE/output/package/
 
-      - name: Pack Source Tree
-        id: pack_source
+      - name: Pack Artifacts
+        id: pack_artifacts
         run: |
-          # Create output directories
+          # Prepare the packaging directory.
           KSUVER=${{ env.version }}
-          mkdir -p $GITHUB_WORKSPACE/output
-          mkdir -p $GITHUB_WORKSPACE/output/package
+          PACKAGE_DIR="$GITHUB_WORKSPACE/output/package"
+          mkdir -p "$PACKAGE_DIR"
 
-          # Copy kernel source and create source archive
-          cp -r $KERNEL_DIR $GITHUB_WORKSPACE/output/kernel_source
-          tar -czf $GITHUB_WORKSPACE/output/ARCVM-SUKISU-SOURCE.tar.gz -C $GITHUB_WORKSPACE/output kernel_source
+          # Copy the compiled kernel image into the package.
+          echo "Copying kernel image..."
+          cp "${{ env.file_path }}" "$PACKAGE_DIR/"
 
-          # Create README file with kernel information
-          echo "Kernel Version: ${KSUVER}" > $GITHUB_WORKSPACE/output/package/README.txt
-          echo "Target System: ChromeOS ARCVM" >> $GITHUB_WORKSPACE/output/package/README.txt
-          echo "Architecture: ${{ matrix.arch }}" >> $GITHUB_WORKSPACE/output/package/README.txt
+          # Copy the packaged kernel modules into the package.
+          echo "Copying kernel modules..."
+          cp "${{ env.modules_path }}" "$PACKAGE_DIR/"
 
-          # Conditionally copy kernel image file if it exists
-          if [ ! -z "${{ env.file_path }}" ] && [ -f "${{ env.file_path }}" ]; then
-            echo "Copying kernel image from ${{ env.file_path }}"
-            cp "${{ env.file_path }}" $GITHUB_WORKSPACE/output/package/
-          else
-            echo "Warning: Kernel image file not available yet. Will be added in the Build Kernel step."
-            # Create a placeholder file so the zip step doesn't fail if there's no kernel image
-            echo "Kernel image will be built in next step" > $GITHUB_WORKSPACE/output/package/kernel_image_placeholder.txt
-          fi
+          # Create a source archive and add it to the package.
+          echo "Creating source archive..."
+          tar -czf "$PACKAGE_DIR/ARCVM-SUKISU-SOURCE.tar.gz" -C "$(dirname $KERNEL_DIR)" "$(basename $KERNEL_DIR)"
 
-          # Create the ZIP file with available contents
-          cd $GITHUB_WORKSPACE/output/package
-          zip -r $GITHUB_WORKSPACE/output/ARCVM-SUKISU-ULTRA.zip .
+          # Create a README file explaining the package contents.
+          echo "Creating README file..."
+          {
+            echo "Kernel Version: ${KSUVER}"
+            echo "Target System: ChromeOS ARCVM"
+            echo "Architecture: ${{ matrix.arch }}"
+            echo ""
+            echo "This package contains:"
+            echo "- ${{ matrix.kernel_image_name }}: The compiled kernel image."
+            echo "- kernel-modules.tar.gz: The compiled kernel modules."
+            echo "- ARCVM-SUKISU-SOURCE.tar.gz: The full patched kernel source tree."
+            echo "- ksu_verification_report.txt: A report on the KernelSU integration."
+          } > "$PACKAGE_DIR/README.txt"
+
+          # Create the final ZIP archive containing all artifacts.
+          echo "Creating final ZIP archive..."
+          cd "$PACKAGE_DIR"
+          zip -r "$GITHUB_WORKSPACE/output/ARCVM-SUKISU-ULTRA.zip" .
+          
+          # Set the path of the final zip file for the upload step.
           echo "zip_path=$GITHUB_WORKSPACE/output/ARCVM-SUKISU-ULTRA.zip" >> $GITHUB_ENV
+          
       - name: Upload kernel-ARCVM-${{ matrix.arch }}-${{ env.version }}
         uses: actions/upload-artifact@v4
         with:
