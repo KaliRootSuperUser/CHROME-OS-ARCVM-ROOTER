@@ -156,8 +156,8 @@ jobs:
           
           # Clean up by removing the cloned repository
           rm -rf SukiSU-Ultra
-          
-          
+      
+
       # overwrite the default kernelSU Kconfig settings 'kernel/drivers/kernelsu/Kconfig'
       - name: Overwrite Default KernelSU Kconfig Settings
         working-directory: kernel
@@ -342,7 +342,7 @@ jobs:
 
           endmenu
           EOF
-           
+
 
       - name: Verify KernelSU files
         run: |
@@ -413,9 +413,9 @@ jobs:
             sed -i '/linux\/susfs_def.h/i\#ifdef CONFIG_KSU_SUSFS' "$KERNEL_DIR/security/lsm_audit.c"
             sed -i '/linux\/susfs_def.h/a\#endif' "$KERNEL_DIR/security/lsm_audit.c"
           fi
-          
-          
-          
+
+
+
       - name: Inject KSU/SUKISU/SUSFS Config Settings into 'kernel/arch/x86/configs/gki_defconfig'
         working-directory: kernel
         run: |
@@ -605,7 +605,7 @@ jobs:
           CONFIG_DEBUG_KERNEL=y
           CONFIG_DEBUG_INFO=y
           EOF
-          
+        
 
         # Manual Injection  of KSU/SUKISU/SUSFS Config Settings   into the default x86/Kconfig file  'kernel/arch/x86/Kconfig'
       - name:  Inject KSU/SUKISU/SUSFS Config Settings into the default x86/Kconfig file  'kernel/arch/x86/Kconfig'
@@ -795,26 +795,6 @@ jobs:
         working-directory: kernel
         run: |
           echo "📦 Configuring kprobes support for KernelSU without duplicating code"
-
-          # First, enable kprobes configs - this is safe to do
-          touch .config
-          echo "CONFIG_KPROBES=y" >> .config
-          echo "CONFIG_HAVE_KPROBES=y" >> .config
-          echo "CONFIG_KPROBE_EVENTS=y" >> .config
-          echo "CONFIG_ARCH_SUPPORTS_KPROBES=y" >> .config
-          echo "CONFIG_KRETPROBES=y" >> .config
-
-          # Create/update autoconf.h with kprobes definitions
-          mkdir -p include/generated
-          if [ ! -f "include/generated/autoconf.h" ]; then
-            touch include/generated/autoconf.h
-            echo "#define CONFIG_KPROBES 1" >> include/generated/autoconf.h
-            echo "#define CONFIG_HAVE_KPROBES 1" >> include/generated/autoconf.h
-            echo "#define CONFIG_KPROBE_EVENTS 1" >> include/generated/autoconf.h
-            echo "#define CONFIG_KRETPROBES 1" >> include/generated/autoconf.h
-            echo "#define CONFIG_KSU 1" >> include/generated/autoconf.h
-            echo "#define CONFIG_KSU_SUSFS 1" >> include/generated/autoconf.h
-          fi
 
           # IMPORTANT: Instead of creating our own kprobes implementation,
           # let's check if the kernel already has one and use that
