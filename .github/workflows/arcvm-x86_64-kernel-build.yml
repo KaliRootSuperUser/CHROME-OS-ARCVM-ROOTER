@@ -391,7 +391,7 @@ jobs:
           echo "Downloading SUSFS headers from GitLab..."
           wget -O "$KERNEL_DIR/include/linux/susfs_def.h" "https://gitlab.com/simonpunk/susfs4ksu/-/raw/gki-android13-5.10/kernel_patches/include/linux/susfs_def.h"
           wget -O "$KERNEL_DIR/include/linux/susfs.h" "https://gitlab.com/simonpunk/susfs4ksu/-/raw/gki-android13-5.10/kernel_patches/include/linux/susfs.h"
-          wget -O "$KERNEL_DIR/include/linux/sus_su.h" "https://gitlab.com/simonpunk/susfs4ksu/-/raw/gki-android13-5.10/kernel_patches/include/linux/sus_su.h"
+          wget -O "$KERNEL_DIR/include/linux/sus_su.h" "https://github.com/KaliRootSuperUser/SUSFS4KSU-ARCVM/blob/main/kernel_patches/include/linux/sus_su.h"
           
           # Also copy from local clone as backup
           if [ -d "$GITHUB_WORKSPACE/susfs/kernel_patches/include" ]; then
