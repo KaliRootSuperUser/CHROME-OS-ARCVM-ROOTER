@@ -945,7 +945,7 @@ jobs:
           echo "#define CONFIG_KSU 1" >> include/generated/autoconf.h
           echo "#define CONFIG_KPM 1" >> include/generated/autoconf.h
           echo "#define CONFIG_KSU_MANUAL_HOOK 1" >> include/generated/autoconf.h
-          
+
       - name: Debug Kernel Headers
         run: |
           echo "=== SUSFS Header Contents ===" 
@@ -991,7 +991,7 @@ jobs:
           
           # Build with verbose output to catch errors
           echo "🔧 Building kernel with KernelSU integration..."
-          make LLVM=1 LLVM_IAS=1 DEPMOD=depmod DTC=dtc O=${PWD} -j$(nproc) ${KERNEL_IMAGE_NAME} V=1 modules prepare-objtool
+          make LLVM=1 LLVM_IAS=1 DEPMOD=depmod DTC=dtc O=${PWD} -j$(nproc) ${KERNEL_IMAGE_NAME} V=1 modules prepare-objtool \
             W=1 \  # Enable extra warnings
             KCFLAGS="-Wno-error=address-of-packed-member -Wno-error=unused-function"
             
